@@ -256,3 +256,10 @@ test('DJEN bloqueado por país: explica que o servidor precisa estar no Brasil',
   const r = await verificarTudo(db, { fetchFn: bloqueado, pausaMs: 0 });
   assert.ok(r.erros.some((e) => /servidores localizados no Brasil/.test(e)));
 });
+
+test('botão de diagnóstico do CNJ', async () => {
+  const r = await req('/api/diagnostico', { metodo: 'POST', corpo: {} });
+  assert.equal(r.status, 200);
+  assert.equal(r.corpo.length, 2);
+  assert.ok(r.corpo.every((x) => x.ok));
+});

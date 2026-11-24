@@ -203,3 +203,26 @@ export async function buscarProcessoDataJud(numero, { fetchFn = fetch } = {}) {
     movimentos,
   };
 }
+
+/** Testa a conexão com o DJEN e o DataJud. Usado pelo botão em Ajustes e pelo script de diagnóstico. */
+export async function testarConexoes(numero = '00008323520184013202', { fetchFn = fetch } = {}) {
+  const resultados = [];
+  try {
+    const desde = new Date(Date.now() - 365 * 86_400_000);
+    const pubs = await buscarPublicacoesDjen({ numeroProcesso: numero }, desde, { fetchFn, maxPaginas: 1 });
+    resultados.push({ fonte: 'DJEN (publicações)', ok: true, mensagem: `Conectado — ${pubs.length} publicação(ões) no último ano para o processo de teste.` });
+  } catch (err) {
+    resultados.push({ fonte: 'DJEN (publicações)', ok: false, mensagem: err.message });
+  }
+  try {
+    const dj = await buscarProcessoDataJud(numero, { fetchFn });
+    resultados.push({
+      fonte: 'DataJud (andamentos)',
+      ok: true,
+      mensagem: dj ? `Conectado — ${dj.movimentos.length} andamento(s) no processo de teste.` : 'Conectado — processo de teste não encontrado na base.',
+    });
+  } catch (err) {
+    resultados.push({ fonte: 'DataJud (andamentos)', ok: false, mensagem: err.message });
+  }
+  return resultados;
+}

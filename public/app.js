@@ -850,6 +850,10 @@ async function telaConfig(c) {
           <div class="acoes"><button class="btn primario">Salvar</button><button type="button" class="btn" id="verif-agora">${icone('atualizar')} Verificar agora</button></div>
           <p class="small muted" style="margin-bottom:0">Última verificação: ${cfg.ultima_verificacao_geral ? fmtDataHora(cfg.ultima_verificacao_geral) : 'ainda não realizada'}</p>
         </form>
+        <hr style="border:0;border-top:1px solid var(--border);margin:1rem 0">
+        <p class="small" style="margin-bottom:.5rem"><strong>Conexão com o CNJ</strong></p>
+        <button type="button" class="btn" id="testar-cnj">Testar conexão com o CNJ</button>
+        <ul class="lista small" id="resultado-cnj" style="margin-top:.5rem"></ul>
       </section>
 
       <section class="card">
@@ -902,6 +906,19 @@ async function telaConfig(c) {
     toast('Configurações salvas.');
   };
   $('#verif-agora').onclick = (e) => verificarAgora(e.currentTarget, () => telaConfig(c));
+  $('#testar-cnj').onclick = async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    $('#resultado-cnj').innerHTML = '<li class="muted">Testando… pode levar até 1 minuto.</li>';
+    try {
+      const r = await api('/diagnostico', { metodo: 'POST', corpo: {} });
+      $('#resultado-cnj').innerHTML = r.map((x) => `<li>${x.ok ? '✅' : '❌'} <strong>${esc(x.fonte)}:</strong> ${esc(x.mensagem)}</li>`).join('');
+    } catch (err) {
+      $('#resultado-cnj').innerHTML = `<li>❌ ${esc(err.message)}</li>`;
+    } finally {
+      b.disabled = false;
+    }
+  };
   const salvarEmail = () =>
     api('/config', {
       metodo: 'PUT',

@@ -4,6 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/rodrigo19jf-spec/rodjuris/main/deploy/instalar.sh | bash
 # Para usar um domínio próprio: ... | DOMINIO=meudominio.com.br bash
 set -euo pipefail
+exec > >(tee -a /var/log/rodjuris-instalacao.log) 2>&1
 
 REPO="${REPO:-https://github.com/rodrigo19jf-spec/rodjuris.git}"
 PASTA="/opt/rodjuris"
@@ -35,6 +36,16 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
   msg "Liberando as portas 80 e 443 no firewall"
   ufw allow 80/tcp >/dev/null
   ufw allow 443/tcp >/dev/null
+fi
+
+# Imagens Ubuntu da Oracle Cloud vêm com regras de iptables que bloqueiam tudo além do SSH.
+if command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null | grep -q -- "-j REJECT"; then
+  msg "Liberando as portas 80 e 443 no firewall interno (iptables)"
+  for porta in 80 443; do
+    iptables -C INPUT -p tcp --dport "$porta" -m state --state NEW -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -p tcp --dport "$porta" -m state --state NEW -j ACCEPT
+  done
+  if command -v netfilter-persistent >/dev/null 2>&1; then netfilter-persistent save >/dev/null 2>&1 || true; fi
 fi
 
 if [ -d "$PASTA/.git" ]; then

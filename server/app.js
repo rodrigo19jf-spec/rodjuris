@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, setConfig, agoraIso } from './db.js';
 import { cnjValido, siglaTribunal, somenteDigitos } from './cnj.js';
-import { buscarProcessoDataJud } from './fontes.js';
+import { buscarProcessoDataJud, testarConexoes } from './fontes.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -466,6 +466,11 @@ export function criarApp(db, { fetchFn = fetch } = {}) {
     } catch (e) {
       erro(res, 502, `Falha no envio: ${e.message}`);
     }
+  });
+
+  app.post('/api/diagnostico', async (req, res) => {
+    const numero = somenteDigitos(req.body?.numero);
+    res.json(await testarConexoes(numero.length === 20 && cnjValido(numero) ? numero : undefined, { fetchFn }));
   });
 
   app.post('/api/verificar-agora', async (req, res) => {
