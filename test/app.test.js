@@ -245,3 +245,14 @@ test('DataJud sobrecarregado (HTTP 429): tenta de novo e, se persistir, mostra m
     s2.close();
   }
 });
+
+test('DJEN bloqueado por país: explica que o servidor precisa estar no Brasil', async () => {
+  const bloqueado = async (url, init) => {
+    if (String(url).includes('comunicaapi')) {
+      return { ok: false, status: 403, text: async () => '<H1>403 ERROR</H1>The Amazon CloudFront distribution is configured to block access from your country.' };
+    }
+    return fetchFalso(url, init);
+  };
+  const r = await verificarTudo(db, { fetchFn: bloqueado, pausaMs: 0 });
+  assert.ok(r.erros.some((e) => /servidores localizados no Brasil/.test(e)));
+});
