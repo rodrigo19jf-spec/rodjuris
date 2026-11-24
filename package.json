@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server/index.js",
     "dev": "node --env-file-if-exists=.env --watch server/index.js",
+    "diagnostico": "node server/diagnostico.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

@@ -61,7 +61,7 @@ async function tentativaJson(fetchFn, url, init) {
     });
     if (!res.ok) {
       const corpo = await res.text().catch(() => '');
-      console.warn(`[fontes] HTTP ${res.status} em ${new URL(url).host}: ${corpo.slice(0, 300)}`);
+      console.warn(`[fontes] HTTP ${res.status} em ${new URL(url).host}: ${corpo.replace(/\s+/g, " ").slice(0, 160)}`);
       if (res.status === 403 && /block access from your country/i.test(corpo)) {
         throw new ErroFonte(
           `O ${nomeFonte(url)} só aceita acessos de servidores localizados no Brasil, e este servidor está no exterior (HTTP 403). Hospede o app em um servidor no Brasil.`,

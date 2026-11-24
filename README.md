@@ -38,40 +38,34 @@ Abra <http://localhost:3000>. No primeiro acesso o app pede para você **criar u
 
 Os dados ficam no arquivo `dados/jurify.db`. Faça backup dessa pasta.
 
-## Como colocar no ar (Railway)
+## Como colocar no ar (servidor no Brasil)
 
-O monitoramento roda no servidor, então o app precisa ficar ligado 24 horas. O Railway publica direto do GitHub, já com HTTPS. Custa cerca de US$ 5 por mês (plano Hobby).
+> **Importante:** o DJEN só aceita acessos de servidores **no Brasil**. Serviços como Railway, Render e Heroku ficam no exterior e não funcionam para as publicações.
 
-1. **GitHub:** crie uma conta em <https://github.com/signup> e um repositório **privado** chamado `rodjuris`, sem README.
-2. **Envie o código** para esse repositório.
-3. **Railway:** entre em <https://railway.com> → *Login* → *Continue with GitHub*. Assine o plano **Hobby**.
-4. *New Project* → *Deploy from GitHub repo* → escolha `rodjuris`. O Railway usa o `Dockerfile` e o `railway.json` deste projeto.
-5. **Volume (obrigatório, senão os dados se perdem a cada atualização):** no projeto, clique com o botão direito no espaço vazio (ou `Ctrl+K`) → *Volume* → conecte ao serviço `rodjuris` com o caminho de montagem **`/app/dados`**.
-6. **Variáveis** (aba *Variables* do serviço):
-   - `TZ_APP` = `America/Sao_Paulo`
-   - `VAPID_SUBJECT` = `mailto:seu-email@exemplo.com`
-7. **Endereço:** *Settings* → *Networking* → *Generate Domain*. Clique no lápis para trocar o nome para `rodjuris` (fica `https://rodjuris.up.railway.app`, se estiver livre).
-8. Abra o endereço, **crie sua senha** e vá em *Ajustes*:
-   - informe sua OAB/UF;
-   - configure o e-mail e clique em *Enviar e-mail de teste*;
-   - clique em *Verificar agora* para confirmar que o servidor consegue consultar o CNJ.
-9. **No celular:**
-   - **Android (Chrome):** abra o endereço, menu ⋮ → *Instalar app*.
-   - **iPhone (Safari, iOS 16.4+):** *Compartilhar* → *Adicionar à Tela de Início* e abra pelo ícone.
-
-   Depois, em *Ajustes*, toque em **Ativar neste aparelho** para receber as notificações.
-
-Cada vez que o código for atualizado no GitHub, o Railway publica a nova versão sozinho. Os dados continuam no volume.
-
-### Outra opção: VPS própria
-
-Num servidor com Docker:
+Use uma VPS com Ubuntu 24.04 numa região brasileira, por exemplo **Vultr São Paulo** (~US$ 5–6/mês) ou **Oracle Cloud São Paulo** (plano grátis). Conectado como `root` (por SSH), rode:
 
 ```bash
-docker compose up -d --build
+curl -fsSL https://raw.githubusercontent.com/rodrigo19jf-spec/rodjuris/main/deploy/instalar.sh | bash
 ```
 
-Para ter HTTPS, coloque o [Caddy](https://caddyserver.com/) na frente do app: `seudominio.com.br { reverse_proxy localhost:3000 }`.
+O script:
+- instala o Docker e libera as portas 80 e 443;
+- sobe o app com **HTTPS automático** (Caddy + Let's Encrypt) num endereço grátis do tipo `https://203-0-113-10.sslip.io`;
+- **testa a conexão com o DJEN e o DataJud**.
+
+Para usar um domínio próprio, aponte o domínio para o IP do servidor e rode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rodrigo19jf-spec/rodjuris/main/deploy/instalar.sh | DOMINIO=meudominio.com.br bash
+```
+
+Para **atualizar**, rode o mesmo comando de novo. Os dados ficam em `/opt/rodjuris/dados`; faça backup dessa pasta.
+
+Para testar a conexão com o CNJ a qualquer momento:
+
+```bash
+cd /opt/rodjuris/deploy && docker compose exec app node server/diagnostico.js
+```
 
 ## Configurar o e-mail
 
