@@ -1,4 +1,4 @@
-// Jurify Pessoal — frontend (JavaScript puro, sem etapa de build).
+// RodJuris — frontend (JavaScript puro, sem etapa de build).
 
 // ───────────── utilitários ─────────────
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
@@ -145,7 +145,7 @@ function telaLogin(configurado) {
     <div class="login">
       <form class="card" id="form-login">
         <img src="/icons/icon.svg" alt="">
-        <h1>Jurify Pessoal</h1>
+        <h1>RodJuris</h1>
         <p class="muted small" style="text-align:center">${configurado ? 'Digite sua senha para entrar.' : 'Primeiro acesso: crie uma senha para proteger seus dados.'}</p>
         <div class="campo"><label for="senha">Senha</label><input id="senha" type="password" autocomplete="${configurado ? 'current-password' : 'new-password'}" required minlength="${configurado ? 1 : 8}"></div>
         ${configurado ? '' : '<div class="campo"><label for="senha2">Repita a senha</label><input id="senha2" type="password" autocomplete="new-password" required minlength="8"><div class="ajuda">Mínimo de 8 caracteres.</div></div>'}
@@ -184,7 +184,7 @@ function montarShell() {
   $('#app').innerHTML = `
     <div class="shell">
       <nav class="nav" aria-label="Menu principal">
-        <div class="marca"><img src="/icons/icon.svg" alt="">Jurify Pessoal</div>
+        <div class="marca"><img src="/icons/icon.svg" alt="">RodJuris</div>
         ${MENU.map(([href, ic, nome]) => `<a href="${href}" data-rota="${ic}">${icone(ic)}<span>${nome}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
       </nav>
       <div class="principal">
@@ -246,7 +246,7 @@ async function alternarAvisos() {
 
 function definirTopo(titulo, { voltar = false, acoes = '' } = {}) {
   $('#titulo-pagina').textContent = titulo;
-  document.title = `${titulo} · Jurify`;
+  document.title = `${titulo} · RodJuris`;
   $('#btn-voltar').hidden = !voltar;
   $('#acoes-topo').innerHTML = acoes;
 }
@@ -879,7 +879,7 @@ async function telaConfig(c) {
             <div class="campo"><label for="e-user">Usuário</label><input id="e-user" autocomplete="off" value="${esc(cfg.smtp_usuario)}"></div>
             <div class="campo"><label for="e-pass">Senha${cfg.smtp_senha_definida ? ' (já definida)' : ''}</label><input id="e-pass" type="password" autocomplete="new-password" placeholder="${cfg.smtp_senha_definida ? '••••••••' : ''}"></div>
           </div>
-          <div class="campo"><label for="e-from">Remetente (opcional)</label><input id="e-from" value="${esc(cfg.smtp_remetente)}" placeholder="Jurify &lt;voce@exemplo.com&gt;"></div>
+          <div class="campo"><label for="e-from">Remetente (opcional)</label><input id="e-from" value="${esc(cfg.smtp_remetente)}" placeholder="RodJuris &lt;voce@exemplo.com&gt;"></div>
           <label class="check small" style="margin-bottom:.75rem"><input type="checkbox" id="e-seguro" ${cfg.smtp_seguro === '1' ? 'checked' : ''}> Conexão SSL direta (porta 465)</label>
           <p class="ajuda">Gmail: use smtp.gmail.com, porta 587 e uma “senha de app” (Conta Google → Segurança → Senhas de app).</p>
           <div class="acoes"><button class="btn primario">Salvar</button><button type="button" class="btn" id="email-teste">Enviar e-mail de teste</button></div>

@@ -11,7 +11,7 @@ chavesVapid(db); // gera as chaves de push na primeira execução
 
 const app = criarApp(db);
 app.listen(PORTA, () => {
-  console.log(`Jurify Pessoal rodando em http://localhost:${PORTA}`);
+  console.log(`RodJuris rodando em http://localhost:${PORTA}`);
 });
 
 // Lembretes: checa a cada minuto.

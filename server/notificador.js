@@ -45,7 +45,7 @@ export async function enviarEmail(db, assunto, texto, { forcar = false } = {}) {
   await transporte.sendMail({
     from: cfg.from || cfg.user,
     to: cfg.destino,
-    subject: `[Jurify] ${assunto}`,
+    subject: `[RodJuris] ${assunto}`,
     text: texto,
   });
   return { enviado: true };
@@ -75,7 +75,7 @@ export async function enviarPush(db, titulo, mensagem, link) {
   if (subs.length === 0) return { enviados: 0 };
   const { publicKey, privateKey } = chavesVapid(db);
   const vapidDetails = {
-    subject: process.env.VAPID_SUBJECT || 'mailto:jurify@localhost',
+    subject: process.env.VAPID_SUBJECT || 'mailto:rodjuris@localhost',
     publicKey,
     privateKey,
   };

@@ -62,6 +62,8 @@ export function criarApp(db, { fetchFn = fetch } = {}) {
     next();
   });
 
+  app.get('/api/saude', (req, res) => res.json({ ok: true }));
+
   // ───────────── autenticação ─────────────
   const tentativas = new Map(); // ip -> { n, ate }
   function sessaoValida(req) {
@@ -489,7 +491,7 @@ export function criarApp(db, { fetchFn = fetch } = {}) {
     res.json({ ok: true });
   });
   app.post('/api/push/testar', async (req, res) => {
-    const r = await enviarPush(db, 'Jurify — teste', 'As notificações no celular estão funcionando. ✅', '/#/');
+    const r = await enviarPush(db, 'RodJuris — teste', 'As notificações no celular estão funcionando. ✅', '/#/');
     res.json(r);
   });
 

@@ -1,4 +1,4 @@
-# Jurify Pessoal
+# RodJuris
 
 Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/ma-serra/jurify-app). Com ele você pode:
 
@@ -38,27 +38,40 @@ Abra <http://localhost:3000>. No primeiro acesso o app pede para você **criar u
 
 Os dados ficam no arquivo `dados/jurify.db`. Faça backup dessa pasta.
 
-## Como usar no celular (recomendado: servidor na nuvem)
+## Como colocar no ar (Railway)
 
-O monitoramento roda no servidor, então o app precisa ficar ligado 24 horas para avisar você. Algumas opções:
+O monitoramento roda no servidor, então o app precisa ficar ligado 24 horas. O Railway publica direto do GitHub, já com HTTPS. Custa cerca de US$ 5 por mês (plano Hobby).
 
-- **VPS** (Hostinger, DigitalOcean, Contabo, Oracle Cloud Free etc.) com Docker:
+1. **GitHub:** crie uma conta em <https://github.com/signup> e um repositório **privado** chamado `rodjuris`, sem README.
+2. **Envie o código** para esse repositório.
+3. **Railway:** entre em <https://railway.com> → *Login* → *Continue with GitHub*. Assine o plano **Hobby**.
+4. *New Project* → *Deploy from GitHub repo* → escolha `rodjuris`. O Railway usa o `Dockerfile` e o `railway.json` deste projeto.
+5. **Volume (obrigatório, senão os dados se perdem a cada atualização):** no projeto, clique com o botão direito no espaço vazio (ou `Ctrl+K`) → *Volume* → conecte ao serviço `rodjuris` com o caminho de montagem **`/app/dados`**.
+6. **Variáveis** (aba *Variables* do serviço):
+   - `TZ_APP` = `America/Sao_Paulo`
+   - `VAPID_SUBJECT` = `mailto:seu-email@exemplo.com`
+7. **Endereço:** *Settings* → *Networking* → *Generate Domain*. Clique no lápis para trocar o nome para `rodjuris` (fica `https://rodjuris.up.railway.app`, se estiver livre).
+8. Abra o endereço, **crie sua senha** e vá em *Ajustes*:
+   - informe sua OAB/UF;
+   - configure o e-mail e clique em *Enviar e-mail de teste*;
+   - clique em *Verificar agora* para confirmar que o servidor consegue consultar o CNJ.
+9. **No celular:**
+   - **Android (Chrome):** abra o endereço, menu ⋮ → *Instalar app*.
+   - **iPhone (Safari, iOS 16.4+):** *Compartilhar* → *Adicionar à Tela de Início* e abra pelo ícone.
 
-  ```bash
-  docker compose up -d --build
-  ```
+   Depois, em *Ajustes*, toque em **Ativar neste aparelho** para receber as notificações.
 
-- **Railway / Render / Fly.io:** use o `Dockerfile` e monte um volume persistente em `/app/dados`.
+Cada vez que o código for atualizado no GitHub, o Railway publica a nova versão sozinho. Os dados continuam no volume.
 
-Para as **notificações push** funcionarem no celular, o endereço precisa ter **HTTPS**. Duas formas simples:
+### Outra opção: VPS própria
 
-- [Caddy](https://caddyserver.com/) na frente do app, com HTTPS automático: `seudominio.com.br { reverse_proxy localhost:3000 }`
-- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), sem abrir portas no servidor.
+Num servidor com Docker:
 
-Depois, no celular:
+```bash
+docker compose up -d --build
+```
 
-- **Android (Chrome):** abra o site, menu ⋮ → *Instalar app*. Em seguida, *Ajustes* → *Ativar neste aparelho*.
-- **iPhone (Safari, iOS 16.4+):** botão Compartilhar → *Adicionar à Tela de Início*. Abra o app pelo ícone e vá em *Ajustes* → *Ativar neste aparelho*.
+Para ter HTTPS, coloque o [Caddy](https://caddyserver.com/) na frente do app: `seudominio.com.br { reverse_proxy localhost:3000 }`.
 
 ## Configurar o e-mail
 

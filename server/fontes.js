@@ -17,7 +17,7 @@ export const DATAJUD_URL = process.env.DATAJUD_URL || 'https://api-publica.dataj
 export const DATAJUD_API_KEY =
   process.env.DATAJUD_API_KEY || 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
 
-const UA = 'jurify-pessoal/1.0';
+const UA = 'rodjuris/1.0';
 
 function dataYmd(d) {
   return new Date(d).toISOString().slice(0, 10);

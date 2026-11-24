@@ -1,5 +1,5 @@
 // Service worker: cache do app (funciona offline para abrir) + notificações push.
-const CACHE = 'jurify-v1';
+const CACHE = 'rodjuris-v1';
 const ARQUIVOS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -31,7 +31,7 @@ self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data && e.data.text() }; }
   e.waitUntil(
-    self.registration.showNotification(d.title || 'Jurify', {
+    self.registration.showNotification(d.title || 'RodJuris', {
       body: d.body || '',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
