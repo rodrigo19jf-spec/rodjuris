@@ -1,0 +1,11 @@
+services:
+  jurify:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./dados:/app/dados
