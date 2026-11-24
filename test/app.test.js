@@ -5,6 +5,9 @@ import { criarApp } from '../server/app.js';
 import { aliasDataJud, cnjValido, formatarCnj } from '../server/cnj.js';
 import { verificarLembretes, verificarTudo } from '../server/monitor.js';
 import { definirEnvioPush, definirTransporteEmail } from '../server/notificador.js';
+import { definirEsperas } from '../server/fontes.js';
+
+definirEsperas([0, 0]);
 
 // Gera um número CNJ válido (calcula o dígito verificador).
 function gerarCnj(seq, ano = '2024', j = '8', tr = '26', origem = '0100') {
@@ -212,7 +215,33 @@ test('falha de uma API é registrada sem interromper a outra', async () => {
     return fetchFalso(url, init);
   };
   const r = await verificarTudo(db, { fetchFn: quebrado, pausaMs: 0 });
-  assert.ok(r.erros.some((e) => /DJEN: HTTP 503/.test(e)));
+  assert.ok(r.erros.some((e) => /DJEN: .*HTTP 503/.test(e)));
   assert.match(db.prepare('SELECT erro_verificacao FROM processos WHERE numero = ?').get(NUM).erro_verificacao, /DJEN/);
   assert.ok(chamadas.some((c) => c.includes('api_publica_tjsp/_search')));
+});
+
+test('DataJud sobrecarregado (HTTP 429): tenta de novo e, se persistir, mostra mensagem clara', async () => {
+  let falhas = 1;
+  const instavel = async (url, init) => {
+    if (String(url).includes('datajud') && falhas-- > 0) {
+      return { ok: false, status: 429, text: async () => '{"error":{"type":"es_rejected_execution_exception"}}' };
+    }
+    return fetchFalso(url, init);
+  };
+  const ok = await req('/api/processos/consultar', { metodo: 'POST', corpo: { numero: NUM } });
+  assert.equal(ok.status, 200);
+  const app2 = criarApp(db, { fetchFn: instavel });
+  const s2 = await new Promise((r) => { const s = app2.listen(0, () => r(s)); });
+  try {
+    const url = `http://127.0.0.1:${s2.address().port}/api/processos/consultar`;
+    const h = { 'Content-Type': 'application/json', Cookie: cookie };
+    let r = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify({ numero: NUM }) });
+    assert.equal(r.status, 200, 'recupera após uma falha temporária');
+    falhas = 99;
+    r = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify({ numero: NUM }) });
+    assert.equal(r.status, 502);
+    assert.match((await r.json()).erro, /DataJud \(CNJ\) está sobrecarregado/);
+  } finally {
+    s2.close();
+  }
 });

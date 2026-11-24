@@ -23,7 +23,34 @@ function dataYmd(d) {
   return new Date(d).toISOString().slice(0, 10);
 }
 
-async function getJson(fetchFn, url, init = {}) {
+// Erros temporários do servidor (sobrecarga, manutenção): vale tentar de novo.
+const STATUS_TEMPORARIOS = new Set([429, 500, 502, 503, 504]);
+const ESPERAS_MS = [2_000, 6_000]; // pausas entre as tentativas (3 tentativas no total)
+
+export class ErroFonte extends Error {
+  constructor(mensagem, { status, temporario = false } = {}) {
+    super(mensagem);
+    this.status = status;
+    this.temporario = temporario;
+  }
+}
+
+function nomeFonte(url) {
+  const host = new URL(url).host;
+  if (host.includes('datajud')) return 'DataJud (CNJ)';
+  if (host.includes('comunica')) return 'DJEN (CNJ)';
+  return host;
+}
+
+function mensagemErro(url, status) {
+  const fonte = nomeFonte(url);
+  if (status === 429) return `O ${fonte} está sobrecarregado no momento (HTTP 429). Tente de novo em alguns minutos — o monitoramento automático tentará sozinho.`;
+  if (status >= 500) return `O ${fonte} está fora do ar ou instável (HTTP ${status}). Tente de novo mais tarde.`;
+  if (status === 401 || status === 403) return `O ${fonte} recusou o acesso (HTTP ${status}).`;
+  return `O ${fonte} respondeu com erro (HTTP ${status}).`;
+}
+
+async function tentativaJson(fetchFn, url, init) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30_000);
   try {
@@ -34,12 +61,33 @@ async function getJson(fetchFn, url, init = {}) {
     });
     if (!res.ok) {
       const corpo = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status} em ${new URL(url).host}: ${corpo.slice(0, 200)}`);
+      console.warn(`[fontes] HTTP ${res.status} em ${new URL(url).host}: ${corpo.slice(0, 300)}`);
+      throw new ErroFonte(mensagemErro(url, res.status), { status: res.status, temporario: STATUS_TEMPORARIOS.has(res.status) });
     }
     return await res.json();
+  } catch (err) {
+    if (err instanceof ErroFonte) throw err;
+    const motivo = err?.name === 'AbortError' ? 'não respondeu a tempo' : 'não pôde ser acessado';
+    throw new ErroFonte(`O ${nomeFonte(url)} ${motivo}. Tente de novo mais tarde.`, { temporario: true });
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getJson(fetchFn, url, init = {}, { esperas = ESPERAS_MS } = {}) {
+  for (let i = 0; ; i++) {
+    try {
+      return await tentativaJson(fetchFn, url, init);
+    } catch (err) {
+      if (!err.temporario || i >= esperas.length) throw err;
+      await new Promise((r) => setTimeout(r, esperas[i]));
+    }
+  }
+}
+
+/** Permite aos testes zerar as pausas entre tentativas. */
+export function definirEsperas(lista) {
+  ESPERAS_MS.splice(0, ESPERAS_MS.length, ...lista);
 }
 
 /** Converte um item do DJEN no formato interno. */

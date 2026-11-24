@@ -210,7 +210,7 @@ export function criarApp(db, { fetchFn = fetch } = {}) {
       if (!dj) return erro(res, 404, 'Processo não encontrado no DataJud (pode estar em segredo de justiça ou ainda não indexado).');
       res.json({ ...dj, movimentos: dj.movimentos.slice(0, 5) });
     } catch (err) {
-      erro(res, 502, `Não foi possível consultar o DataJud: ${err.message}`);
+      erro(res, 502, err.message);
     }
   });
 
