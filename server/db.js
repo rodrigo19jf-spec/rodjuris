@@ -131,6 +131,20 @@ CREATE TABLE IF NOT EXISTS notificacoes (
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
 
+CREATE TABLE IF NOT EXISTS audiencias (
+  id SERIAL PRIMARY KEY,
+  numero_processo TEXT,                    -- 20 dígitos (opcional)
+  sei TEXT,
+  titulo TEXT,                             -- partes / apelido
+  data TEXT NOT NULL,                      -- AAAA-MM-DD
+  hora TEXT,                               -- HH:MM
+  descricao TEXT,                          -- tipo / local / link
+  observacoes TEXT,
+  antecedencia_min INTEGER NOT NULL DEFAULT 1440,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);
+CREATE INDEX IF NOT EXISTS ix_audiencias_data ON audiencias(data);
+
 CREATE TABLE IF NOT EXISTS anotacoes (
   id SERIAL PRIMARY KEY,
   titulo TEXT NOT NULL,
@@ -212,6 +226,19 @@ const MIGRACOES = [
      criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
      atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});`,
   `ALTER TABLE anotacoes ADD COLUMN IF NOT EXISTS categoria TEXT;`,
+  // Audiências passam a ter menu próprio: transfere as que estavam no cadastro do processo (com o lembrete).
+  `CREATE TABLE IF NOT EXISTS audiencias (
+     id SERIAL PRIMARY KEY, numero_processo TEXT, sei TEXT, titulo TEXT, data TEXT NOT NULL, hora TEXT,
+     descricao TEXT, observacoes TEXT, antecedencia_min INTEGER NOT NULL DEFAULT 1440,
+     criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});
+   CREATE INDEX IF NOT EXISTS ix_audiencias_data ON audiencias(data);
+   ALTER TABLE audiencias ADD COLUMN IF NOT EXISTS processo_antigo INTEGER;
+   INSERT INTO audiencias (numero_processo, sei, titulo, data, hora, descricao, antecedencia_min, processo_antigo)
+     SELECT numero, sei, titulo, audiencia_data, audiencia_hora, audiencia_descricao, audiencia_antecedencia_min, id
+     FROM processos WHERE audiencia_data IS NOT NULL;
+   UPDATE lembretes SET origem = 'aud|' || a.id
+     FROM audiencias a WHERE a.processo_antigo IS NOT NULL AND lembretes.origem = 'audiencia|' || a.processo_antigo;
+   UPDATE processos SET audiencia_data = NULL, audiencia_hora = NULL, audiencia_descricao = NULL WHERE audiencia_data IS NOT NULL;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

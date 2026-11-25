@@ -202,16 +202,19 @@ async function copiarTexto(t) {
 
 const AVISO_AUDIENCIA = [[60, '1 hora antes'], [120, '2 horas antes'], [1440, '1 dia antes'], [2880, '2 dias antes'], [10080, '1 semana antes']];
 
-function textoAudiencia(p) {
+/** "hoje às 14:00", "amanhã", "10/12/2026 às 09:30" */
+function textoDataHora(data, hora) {
   const hoje = ymdLocal(new Date());
   const amanha = ymdLocal(new Date(Date.now() + 86_400_000));
-  const dia = p.audiencia_data === hoje ? 'hoje' : p.audiencia_data === amanha ? 'amanhã' : fmtData(p.audiencia_data);
-  return `${dia}${p.audiencia_hora ? ` às ${p.audiencia_hora}` : ''}`;
+  const dia = data === hoje ? 'hoje' : data === amanha ? 'amanhã' : fmtData(data);
+  return `${dia}${hora ? ` às ${hora}` : ''}`;
 }
+/** Etiqueta da próxima audiência do processo (vinda do menu Audiências). */
 function seloAudiencia(p) {
-  if (!p.audiencia_data || p.audiencia_data < ymdLocal(new Date())) return '';
-  const urgente = p.audiencia_data <= ymdLocal(new Date(Date.now() + 86_400_000));
-  return `<span class="badge ${urgente ? 'erro' : 'audiencia'}" title="${esc(p.audiencia_descricao || 'Audiência agendada')}">🗓 Audiência ${textoAudiencia(p)}</span>`;
+  if (!p.proxima_audiencia) return '';
+  const [data, hora] = p.proxima_audiencia.split(' ');
+  const urgente = data <= ymdLocal(new Date(Date.now() + 86_400_000));
+  return `<span class="badge ${urgente ? 'erro' : 'audiencia'}" title="Audiência agendada (veja o menu Audiências)">🗓 Audiência ${textoDataHora(data, hora)}</span>`;
 }
 
 const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
@@ -237,6 +240,7 @@ const ICONES = {
   publicacoes: '<path d="M4 5h13a2 2 0 0 1 2 2v12a2 2 0 0 0 2-2V8M4 5v13a2 2 0 0 0 2 2h13M8 9h7M8 13h7M8 17h4"/>',
   agenda: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   lembretes: '<path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zM18 16V11a6 6 0 1 0-12 0v5l-2 2h16z"/>',
+  audiencias: '<path d="M12 3v3M5 21h14M7 21V11h10v10M4 11h16L12 6z"/>',
   anotacoes: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   config: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   sino: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
@@ -341,6 +345,7 @@ const MENU = [
   ['#/publicacoes', 'publicacoes', 'Publicações', 'Publ.'],
   ['#/agenda', 'agenda', 'Agenda', 'Agenda'],
   ['#/lembretes', 'lembretes', 'Lembretes', 'Lembr.'],
+  ['#/audiencias', 'audiencias', 'Audiências', 'Audiên.'],
   ['#/anotacoes', 'anotacoes', 'Anotações', 'Notas'],
   ['#/config', 'config', 'Ajustes', 'Ajustes'],
 ];
@@ -350,13 +355,14 @@ function montarShell() {
     <div class="shell">
       <nav class="nav" aria-label="Menu principal">
         <div class="marca"><img src="/icons/icon.svg" alt="">RodJuris</div>
-        ${MENU.map(([href, ic, nome, curto]) => `<a href="${href}" data-rota="${ic}" title="${nome}">${icone(ic)}<span class="rotulo-longo">${nome}</span><span class="rotulo-curto">${curto}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
+        ${MENU.map(([href, ic, nome, curto]) => `<a href="${href}" data-rota="${ic}" title="${nome}"${ic === 'config' ? ' class="so-desktop-nav"' : ''}>${icone(ic)}<span class="rotulo-longo">${nome}</span><span class="rotulo-curto">${curto}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
       </nav>
       <div class="principal">
         <header class="topo">
           <button class="btn icone" id="btn-voltar" hidden aria-label="Voltar">${icone('voltar')}</button>
           <h1 id="titulo-pagina"></h1>
           <div id="acoes-topo" class="acoes"></div>
+          <a class="btn icone so-celular" href="#/config" aria-label="Ajustes">${icone('config')}</a>
           <button class="btn icone sino" id="btn-sino" aria-label="Avisos">${icone('sino')}<span class="contador" id="cont-sino" hidden></span></button>
         </header>
         <div id="painel-avisos" class="painel-avisos" hidden></div>
@@ -434,6 +440,7 @@ async function rotear() {
     else if (raiz === 'agenda') await telaAgenda(c);
     else if (raiz === 'lembretes') await telaLembretes(c);
     else if (raiz === 'anotacoes') await telaAnotacoes(c);
+    else if (raiz === 'audiencias') await telaAudiencias(c);
     else if (raiz === 'config') await telaConfig(c);
     else c.innerHTML = '<p class="vazio">Página não encontrada.</p>';
   } catch (err) {
@@ -551,10 +558,10 @@ async function telaPainel(c) {
         ${a.disponibilizado_em ? `<span class="muted"> · ${fmtDataHora(a.disponibilizado_em)}</span>` : ''}</li>`).join('')}</ul>
     </section>` : ''}
     ${d.audiencias?.length ? `<section class="card" style="margin-top:1rem;border-left:4px solid var(--t-audiencia)">
-      <div class="secao-titulo" style="margin-top:0"><h2>🗓 Próximas audiências (${d.audiencias.length})</h2><a class="small" href="#/agenda">Ver na agenda</a></div>
+      <div class="secao-titulo" style="margin-top:0"><h2>🗓 Próximas audiências (${d.audiencias.length})</h2><a class="small" href="#/audiencias">Ver todas</a></div>
       <ul class="lista">${d.audiencias.map((a) => `<li class="small">
-        <div class="acoes"><strong>${textoAudiencia(a)}</strong> · <a href="#/processos/${a.id}" style="font-weight:600">${esc(a.titulo || a.cliente || formatarCnj(a.numero))}</a></div>
-        <div class="muted">${[a.audiencia_descricao, a.orgao].filter(Boolean).map(esc).join(' · ') || esc(formatarCnj(a.numero))}</div>
+        <div class="acoes"><strong>${textoDataHora(a.data, a.hora)}</strong> · <span style="font-weight:600">${esc(nomeAudiencia(a))}</span></div>
+        <div class="muted">${[a.descricao, a.sei ? `SEI ${a.sei}` : null].filter(Boolean).map(esc).join(' · ')}</div>
       </li>`).join('')}</ul>
     </section>` : ''}
     ${d.liminares?.length ? `<section class="card" style="margin-top:1rem;border-left:4px solid var(--warn)">
@@ -705,19 +712,6 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
         <div class="campo"><label for="f-classe">Classe</label><input id="f-classe" value="${esc(p.classe || '')}"></div>
         <div class="campo"><label for="f-status">Situação</label><select id="f-status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${(p.status || 'ativo') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
-      <fieldset class="bloco">
-        <legend>Audiência agendada</legend>
-        <div class="campos-2">
-          <div class="campo"><label for="f-aud-data">Data</label><input type="date" id="f-aud-data" value="${esc(p.audiencia_data || '')}"></div>
-          <div class="campo"><label for="f-aud-hora">Hora</label><input type="time" id="f-aud-hora" value="${esc(p.audiencia_hora || '')}"></div>
-        </div>
-        <div class="campos-2">
-          <div class="campo"><label for="f-aud-desc">Tipo / local / link</label><input id="f-aud-desc" maxlength="500" placeholder="Ex.: Conciliação – sala 3 (ou link da videoconferência)" value="${esc(p.audiencia_descricao || '')}"></div>
-          <div class="campo"><label for="f-aud-aviso">Avisar</label><select id="f-aud-aviso">${AVISO_AUDIENCIA.map(([v, t]) => `<option value="${v}" ${Number(p.audiencia_antecedencia_min || 1440) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
-        </div>
-        <div class="acoes"><button type="button" class="btn pequeno" id="limpar-aud">Limpar audiência</button>
-          <span class="ajuda">Com a data preenchida, o app cria o aviso automaticamente (no app, por e-mail e no celular).</span></div>
-      </fieldset>
       <div class="campo"><label for="f-liminar">Liminar</label>
         <select id="f-liminar">
           <option value="">— Não informado —</option>
@@ -755,11 +749,6 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
       <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
     </form>`, {
     aoAbrir: (m, fechar) => {
-      $('#limpar-aud', m).onclick = () => {
-        $('#f-aud-data', m).value = '';
-        $('#f-aud-hora', m).value = '';
-        $('#f-aud-desc', m).value = '';
-      };
       $('#f-liminar', m).onchange = (e) => ($('#bloco-cumprimento', m).hidden = e.target.value !== 'deferida');
       if (focoCumprimento && !$('#bloco-cumprimento', m).hidden) {
         setTimeout(() => {
@@ -810,10 +799,6 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
           numero: $('#f-numero', m).value,
           titulo: $('#f-titulo', m).value,
           sei: $('#f-sei', m).value,
-          audiencia_data: $('#f-aud-data', m).value || null,
-          audiencia_hora: $('#f-aud-hora', m).value || null,
-          audiencia_descricao: $('#f-aud-desc', m).value,
-          audiencia_antecedencia_min: $('#f-aud-aviso', m).value,
           cliente: $('#f-cliente', m).value,
           parte_contraria: $('#f-contraria', m).value,
           tribunal: $('#f-tribunal', m).value,
@@ -877,7 +862,11 @@ async function telaProcesso(c, id, abaInicial) {
         <div class="acoes"><button class="btn pequeno" id="editar">Editar</button><button class="btn pequeno perigo" id="excluir">Excluir</button></div>
       </div>
       <dl class="dados">
-        ${p.audiencia_data ? `<div><dt>Audiência</dt><dd>${textoAudiencia(p)}${p.audiencia_data < ymdLocal(new Date()) ? ' <span class="badge">realizada?</span>' : ''}${p.audiencia_descricao ? `<div class="small muted">${esc(p.audiencia_descricao)}</div>` : ''}</dd></div>` : ''}
+        ${(() => {
+          const hoje = ymdLocal(new Date());
+          const prox = (p.audiencias || []).filter((x) => x.data >= hoje).sort((x, y) => (x.data + (x.hora || '')).localeCompare(y.data + (y.hora || '')))[0];
+          return prox ? `<div><dt>Próxima audiência</dt><dd><a href="#/audiencias">${textoDataHora(prox.data, prox.hora)}</a>${prox.descricao ? `<div class="small muted">${esc(prox.descricao)}</div>` : ''}</dd></div>` : '';
+        })()}
         ${p.sei ? `<div><dt>Nº SEI</dt><dd><span class="mono">${esc(p.sei)}</span> <button class="btn pequeno" id="copiar-sei" title="Copiar para colar na pesquisa do SEI">Copiar</button></dd></div>` : ''}
         ${[['Cliente', p.cliente], ['Parte contrária', p.parte_contraria], ['Tribunal', p.tribunal], ['Vara / órgão', p.orgao], ['Classe', p.classe], ['Assunto', p.assunto]]
           .filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}
@@ -1052,6 +1041,117 @@ async function telaPublicacoes(c) {
     carregar();
   };
   await carregar();
+}
+
+// ───────────── audiências ─────────────
+const nomeAudiencia = (a) => a.titulo || a.processo_titulo || (a.numero_processo ? formatarCnj(a.numero_processo) : a.sei ? `SEI ${a.sei}` : 'Audiência');
+
+function formAudiencia(a = null, aoSalvar) {
+  const editando = !!a?.id;
+  const base = a || { antecedencia_min: 1440 };
+  abrirModal(editando ? 'Editar audiência' : 'Nova audiência', `
+    <form id="form-aud">
+      <div class="campos-2">
+        <div class="campo"><label for="a-num">Nº do processo</label><input id="a-num" inputmode="numeric" placeholder="0000000-00.0000.0.00.0000" value="${esc(formatarCnj(base.numero_processo || ''))}"></div>
+        <div class="campo"><label for="a-sei">Nº SEI</label><input id="a-sei" inputmode="numeric" placeholder="Ex.: 1320.01.0012345/2026-12" value="${esc(base.sei || '')}"></div>
+      </div>
+      <div class="campos-2">
+        <div class="campo"><label for="a-data">Data *</label><input type="date" id="a-data" required value="${esc(base.data || '')}"></div>
+        <div class="campo"><label for="a-hora">Hora</label><input type="time" id="a-hora" value="${esc(base.hora || '')}"></div>
+      </div>
+      <div class="campos-2">
+        <div class="campo"><label for="a-desc">Tipo / local / link</label><input id="a-desc" maxlength="500" placeholder="Ex.: Conciliação – sala 3 (ou link)" value="${esc(base.descricao || '')}"></div>
+        <div class="campo"><label for="a-aviso">Avisar</label><select id="a-aviso">${AVISO_AUDIENCIA.map(([v, t]) => `<option value="${v}" ${Number(base.antecedencia_min || 1440) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="campo"><label for="a-titulo">Partes / apelido (opcional)</label><input id="a-titulo" maxlength="200" placeholder="Ex.: FHEMIG x Consórcio IGC Cetus" value="${esc(base.titulo || '')}"></div>
+      <div class="campo"><label for="a-obs">Observações</label><textarea id="a-obs" maxlength="5000" placeholder="Ex.: levar preposto; testemunhas; documentos…">${esc(base.observacoes || '')}</textarea></div>
+      <div id="erro-aud" class="alerta-caixa erro" hidden></div>
+      <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
+    </form>`, {
+    aoAbrir: (m, fechar) => {
+      $('#form-aud', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const corpo = {
+          numero_processo: $('#a-num', m).value,
+          sei: $('#a-sei', m).value,
+          data: $('#a-data', m).value,
+          hora: $('#a-hora', m).value || null,
+          descricao: $('#a-desc', m).value,
+          antecedencia_min: Number($('#a-aviso', m).value),
+          titulo: $('#a-titulo', m).value,
+          observacoes: $('#a-obs', m).value,
+        };
+        try {
+          await api(editando ? `/audiencias/${base.id}` : '/audiencias', { metodo: editando ? 'PUT' : 'POST', corpo });
+          fechar();
+          toast(editando ? 'Audiência atualizada.' : 'Audiência salva. O lembrete foi criado.');
+          aoSalvar?.();
+        } catch (err) {
+          const caixa = $('#erro-aud', m);
+          caixa.textContent = err.message;
+          caixa.hidden = false;
+        }
+      };
+    },
+  });
+}
+
+function htmlAudiencia(a, passada = false) {
+  const aviso = AVISO_AUDIENCIA.find(([v]) => v === Number(a.antecedencia_min))?.[1] || '1 dia antes';
+  const hoje = ymdLocal(new Date());
+  const urgente = !passada && a.data <= ymdLocal(new Date(Date.now() + 86_400_000));
+  return `<article class="card audiencia-card ${passada ? 'passada' : ''}">
+    <div class="aud-data ${urgente ? 'urgente' : ''}">
+      <div class="dia">${a.data.slice(8, 10)}</div>
+      <div class="mes">${new Date(`${a.data}T12:00:00`).toLocaleDateString('pt-BR', { month: 'short' }).replace('.', '')} ${a.data.slice(0, 4)}</div>
+      ${a.hora ? `<div class="hora">${esc(a.hora)}</div>` : ''}
+    </div>
+    <div class="corpo">
+      <h3 style="margin:0">${esc(nomeAudiencia(a))} ${a.data === hoje ? '<span class="badge erro">hoje</span>' : ''}</h3>
+      ${a.descricao ? `<div class="small" style="margin-top:.2rem">${esc(a.descricao)}</div>` : ''}
+      <div class="small" style="margin-top:.35rem">
+        ${a.numero_processo ? `<div>Processo: <span class="mono">${esc(formatarCnj(a.numero_processo))}</span> <button class="btn pequeno copiar" data-texto="${esc(formatarCnj(a.numero_processo))}">Copiar</button>${a.processo_id ? ` <a href="#/processos/${a.processo_id}">ver processo</a>` : ''}</div>` : ''}
+        ${a.sei ? `<div>SEI: <span class="mono">${esc(a.sei)}</span> <button class="btn pequeno copiar" data-texto="${esc(a.sei)}">Copiar</button></div>` : ''}
+      </div>
+      ${a.observacoes ? `<div class="small muted" style="white-space:pre-line;margin-top:.35rem">${esc(a.observacoes)}</div>` : ''}
+      ${passada ? '' : `<div class="small muted" style="margin-top:.35rem">🔔 Aviso ${aviso}${a.aviso_enviado_em ? ' · enviado' : ''}</div>`}
+      <div class="acoes" style="margin-top:.5rem">
+        <button class="btn pequeno editar-aud" data-id="${a.id}">Editar</button>
+        <button class="btn pequeno perigo excluir-aud" data-id="${a.id}">Excluir</button>
+      </div>
+    </div>
+  </article>`;
+}
+
+async function telaAudiencias(c) {
+  definirTopo('Audiências', { acoes: `<button class="btn primario" id="nova-aud">${icone('mais')}<span class="so-desktop">Nova audiência</span></button>` });
+  const todas = await api('/audiencias');
+  const hoje = ymdLocal(new Date());
+  const proximas = todas.filter((a) => a.data >= hoje).sort((x, y) => (x.data + (x.hora || '')).localeCompare(y.data + (y.hora || '')));
+  const passadas = todas.filter((a) => a.data < hoje);
+  c.innerHTML = `
+    <div class="secao-titulo" style="margin-top:0"><h2>Próximas <span class="muted small">(${proximas.length})</span></h2></div>
+    <div class="pilha">${proximas.length ? proximas.map((a) => htmlAudiencia(a)).join('') : '<div class="card vazio">Nenhuma audiência agendada.<br><br><button class="btn primario" id="primeira-aud">Cadastrar audiência</button></div>'}</div>
+    ${passadas.length ? `<details style="margin-top:1.5rem"><summary class="muted">Realizadas (${passadas.length})</summary>
+      <div class="pilha" style="margin-top:.75rem">${passadas.map((a) => htmlAudiencia(a, true)).join('')}</div></details>` : ''}`;
+  const recarregar = () => telaAudiencias(c);
+  $('#nova-aud').onclick = () => formAudiencia(null, recarregar);
+  $('#primeira-aud')?.addEventListener('click', () => formAudiencia(null, recarregar));
+  $$('.editar-aud', c).forEach((b) => b.addEventListener('click', () => formAudiencia(todas.find((a) => String(a.id) === b.dataset.id), recarregar)));
+  $$('.excluir-aud', c).forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!(await confirmar('Excluir esta audiência? O lembrete dela também será removido.'))) return;
+      await api(`/audiencias/${b.dataset.id}`, { metodo: 'DELETE' });
+      toast('Audiência excluída.');
+      recarregar();
+    }),
+  );
+  $$('.copiar', c).forEach((b) =>
+    b.addEventListener('click', async () => {
+      await copiarTexto(b.dataset.texto);
+      toast('Copiado.');
+    }),
+  );
 }
 
 // ───────────── anotações gerais ─────────────

@@ -378,7 +378,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   const pasta = fs.mkdtempSync(path.join(os.tmpdir(), 'rodjuris-mig-'));
   const antigo = new PGlite(pasta);
   await antigo.exec(`
-    CREATE TABLE processos (id SERIAL PRIMARY KEY, numero TEXT NOT NULL UNIQUE, ultima_verificacao TEXT, monitorar INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE processos (id SERIAL PRIMARY KEY, numero TEXT NOT NULL UNIQUE, titulo TEXT, ultima_verificacao TEXT, monitorar INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE andamentos (id SERIAL PRIMARY KEY, processo_id INTEGER, external_key TEXT);
     CREATE TABLE config (chave TEXT PRIMARY KEY, valor TEXT);
     CREATE TABLE push_subscriptions (endpoint TEXT PRIMARY KEY, dados TEXT NOT NULL);
@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '10');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '11');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -923,51 +923,94 @@ test('providências: tipo, hora, lembrete opcional, edição e exclusão', async
   }
 });
 
-test('audiência agendada no processo: lembrete automático, reagendamento, painel e remoção', async () => {
+test('audiências (menu próprio): lembrete automático, reagendamento, painel, vínculo com processo e exclusão', async () => {
   const { dataBrasilia } = await import('../server/prazos.js');
   const antigo = process.env.PJE_TJMG;
   process.env.PJE_TJMG = '0';
   try {
     const NUM_A = gerarCnj(9393939, '2026', '8', '13', '0024');
+    const proc = (await req('/api/processos', { metodo: 'POST', corpo: { numero: NUM_A, titulo: 'MS Cetus', monitorar: false } })).corpo;
     const daqui10 = dataBrasilia(new Date(Date.now() + 10 * 86_400_000).toISOString());
-    const r = await req('/api/processos', {
+    const r = await req('/api/audiencias', {
       metodo: 'POST',
-      corpo: { numero: NUM_A, titulo: 'Caso audiência', orgao: '2ª Vara da Fazenda', audiencia_data: daqui10, audiencia_hora: '14:00', audiencia_descricao: 'Conciliação – sala 3', monitorar: false },
+      corpo: { numero_processo: formatarCnj(NUM_A), sei: '2270.01.0045678/2026-31', data: daqui10, hora: '14:00', descricao: 'Conciliação – sala 3' },
     });
     assert.equal(r.status, 201);
     const id = r.corpo.id;
-    let l = await db.get('SELECT * FROM lembretes WHERE origem = ?', `audiencia|${id}`);
+    let l = await db.get('SELECT * FROM lembretes WHERE origem = ?', `aud|${id}`);
     assert.equal(l.tipo, 'audiencia');
     assert.equal(l.data_hora, new Date(`${daqui10}T14:00:00-03:00`).toISOString());
     assert.equal(l.antecedencia_min, 1440, 'padrão: avisa 1 dia antes');
-    assert.match(l.descricao, /Conciliação – sala 3/);
+    assert.equal(l.processo_id, proc.id, 'vinculado ao processo cadastrado pelo número');
+    assert.match(l.descricao, /SEI 2270\.01\.0045678\/2026-31/);
 
-    const painel = await req('/api/painel');
-    assert.ok(painel.corpo.audiencias.some((a) => a.id === id));
+    // Aparece no painel, na lista de processos (etiqueta) e na página do processo.
+    assert.ok((await req('/api/painel')).corpo.audiencias.some((a) => a.id === id));
+    const naLista = (await req('/api/processos')).corpo.find((p) => p.id === proc.id);
+    assert.equal(naLista.proxima_audiencia, `${daqui10} 14:00`);
+    assert.equal((await req(`/api/processos/${proc.id}`)).corpo.audiencias.length, 1);
 
-    // Reagendar: atualiza o mesmo lembrete e volta a avisar; muda a antecedência.
+    // Reagendar.
     await db.run('UPDATE lembretes SET notificado_em = ? WHERE id = ?', new Date().toISOString(), l.id);
-    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_hora: '15:30', audiencia_antecedencia_min: 120 } });
-    const l2 = await db.get('SELECT * FROM lembretes WHERE origem = ?', `audiencia|${id}`);
+    await req(`/api/audiencias/${id}`, { metodo: 'PUT', corpo: { hora: '15:30', antecedencia_min: 120 } });
+    const l2 = await db.get('SELECT * FROM lembretes WHERE origem = ?', `aud|${id}`);
     assert.equal(l2.id, l.id);
     assert.equal(l2.data_hora, new Date(`${daqui10}T15:30:00-03:00`).toISOString());
     assert.equal(l2.antecedencia_min, 120);
-    assert.equal(l2.notificado_em, null);
+    assert.equal(l2.notificado_em, null, 'volta a avisar');
 
-    // Editar outro campo não mexe na audiência.
-    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { titulo: 'Caso audiência (editado)' } });
-    assert.equal((await db.get('SELECT audiencia_data FROM processos WHERE id = ?', id)).audiencia_data, daqui10);
+    // Só com SEI (sem processo) também vale.
+    const soSei = await req('/api/audiencias', { metodo: 'POST', corpo: { sei: '1320.01.0000001/2026-00', data: daqui10 } });
+    assert.equal(soSei.status, 201);
+    assert.equal((await db.get('SELECT processo_id FROM lembretes WHERE origem = ?', `aud|${soSei.corpo.id}`)).processo_id, null);
 
-    assert.equal((await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_hora: '25:99' } })).status, 400);
-    assert.equal((await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_antecedencia_min: 7 } })).status, 400);
+    // Validações.
+    assert.equal((await req('/api/audiencias', { metodo: 'POST', corpo: { data: daqui10 } })).status, 400, 'precisa de processo, SEI ou nome');
+    assert.equal((await req('/api/audiencias', { metodo: 'POST', corpo: { sei: '1', data: '2026-02-31' } })).status, 400);
+    assert.equal((await req('/api/audiencias', { metodo: 'POST', corpo: { sei: '1', data: daqui10, hora: '24:00' } })).status, 400);
+    assert.equal((await req('/api/audiencias', { metodo: 'POST', corpo: { sei: '1', data: daqui10, antecedencia_min: 7 } })).status, 400);
 
-    // Apagar a data remove o aviso.
-    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_data: null, audiencia_hora: null } });
-    assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `audiencia|${id}`), undefined);
-    await req(`/api/processos/${id}`, { metodo: 'DELETE' });
+    // O cadastro do processo não tem mais campos de audiência.
+    await req(`/api/processos/${proc.id}`, { metodo: 'PUT', corpo: { audiencia_data: daqui10 } });
+    assert.equal((await db.get('SELECT audiencia_data FROM processos WHERE id = ?', proc.id)).audiencia_data, null);
+
+    // Excluir remove o lembrete.
+    assert.equal((await req(`/api/audiencias/${id}`, { metodo: 'DELETE' })).status, 200);
+    assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `aud|${id}`), undefined);
+    await req(`/api/audiencias/${soSei.corpo.id}`, { metodo: 'DELETE' });
+    await req(`/api/processos/${proc.id}`, { metodo: 'DELETE' });
   } finally {
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
   }
+});
+
+test('migração: audiências que estavam no cadastro do processo vão para o menu Audiências, com o lembrete', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const pasta = fs.mkdtempSync(path.join(os.tmpdir(), 'rodjuris-aud-'));
+  let b = await openDb(pasta);
+  // Simula o banco da versão 10, com uma audiência no processo e o lembrete antigo.
+  await b.run("UPDATE config SET valor = '10' WHERE chave = 'schema_versao'");
+  await b.run('DROP TABLE audiencias');
+  const p = await b.get(
+    "INSERT INTO processos (numero, titulo, sei, audiencia_data, audiencia_hora, audiencia_descricao, audiencia_antecedencia_min) VALUES ('11920172920268130024', 'MS Cetus', '2270.01.1/2026-1', '2026-12-10', '14:00', 'Conciliação', 120) RETURNING id",
+  );
+  await b.run("INSERT INTO lembretes (titulo, tipo, data_hora, origem, processo_id) VALUES ('Audiência — MS Cetus', 'audiencia', '2026-12-10T17:00:00.000Z', ?, ?)", `audiencia|${p.id}`, p.id);
+  await b.close();
+
+  b = await openDb(pasta);
+  const a = await b.get('SELECT * FROM audiencias');
+  assert.equal(a.numero_processo, '11920172920268130024');
+  assert.equal(a.data, '2026-12-10');
+  assert.equal(a.hora, '14:00');
+  assert.equal(a.descricao, 'Conciliação');
+  assert.equal(a.antecedencia_min, 120);
+  assert.equal(a.sei, '2270.01.1/2026-1');
+  assert.ok(await b.get('SELECT 1 FROM lembretes WHERE origem = ?', `aud|${a.id}`), 'lembrete preservado com a nova origem');
+  assert.equal((await b.get('SELECT audiencia_data FROM processos')).audiencia_data, null);
+  await b.close();
+  fs.rmSync(pasta, { recursive: true, force: true });
 });
 
 test('datas e horas impossíveis são recusadas com mensagem (não derrubam o servidor)', async () => {
@@ -975,7 +1018,7 @@ test('datas e horas impossíveis são recusadas com mensagem (não derrubam o se
   process.env.PJE_TJMG = '0';
   try {
     const proc = (await req('/api/processos', { metodo: 'POST', corpo: { numero: gerarCnj(9494949, '2026', '8', '13', '0024'), monitorar: false } })).corpo;
-    for (const corpo of [{ audiencia_data: '2026-02-31' }, { audiencia_hora: '24:00' }, { cumprimento_prazo: '2026-13-01' }]) {
+    for (const corpo of [{ cumprimento_prazo: '2026-13-01' }, { cumprimento_data: '2026-02-30' }]) {
       const r = await req(`/api/processos/${proc.id}`, { metodo: 'PUT', corpo });
       assert.equal(r.status, 400, JSON.stringify(corpo));
     }

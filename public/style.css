@@ -92,6 +92,16 @@ h3 { font-size: 1rem; }
 .nav svg { width: 20px; height: 20px; flex: none; }
 .nav .contador { margin-left: auto; }
 .nav .rotulo-curto { display: none; }
+.so-celular { display: none !important; }
+.audiencia-card { display: flex; gap: 1rem; align-items: flex-start; border-left: 4px solid var(--t-audiencia); }
+.audiencia-card.passada { opacity: .7; border-left-color: var(--border); }
+.audiencia-card .corpo { flex: 1; min-width: 0; }
+.aud-data { text-align: center; min-width: 64px; background: var(--info-bg); color: var(--t-audiencia); border-radius: 10px; padding: .4rem .3rem; }
+.aud-data.urgente { background: var(--danger-bg); color: var(--danger); }
+.aud-data .dia { font-size: 1.6rem; font-weight: 700; line-height: 1; }
+.aud-data .mes { font-size: .72rem; text-transform: uppercase; font-weight: 600; }
+.aud-data .hora { font-size: .85rem; font-weight: 700; margin-top: .2rem; }
+a.badge { text-decoration: none; }
 .principal { min-width: 0; }
 .topo {
   display: flex; align-items: center; gap: .75rem;
@@ -112,6 +122,8 @@ h3 { font-size: 1rem; }
   .nav .marca, .so-desktop { display: none; }
   .nav a { flex-direction: column; gap: 2px; font-size: .68rem; padding: .35rem .1rem; flex: 1 1 0; min-width: 0; position: relative; }
   .nav .rotulo-longo { display: none; }
+  .nav .so-desktop-nav { display: none; }
+  .so-celular { display: inline-flex !important; }
   .nav .rotulo-curto { display: inline; white-space: nowrap; }
   .nav .contador { position: absolute; top: 0; right: calc(50% - 22px); margin: 0; }
   .topo { padding: .6rem 1rem; }

@@ -10,7 +10,7 @@ import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.j
 import { textoClasse } from './classes_cnj.js';
 import { SITUACOES_CUMPRIMENTO, calcularPrazo, sincronizarCumprimento } from './cumprimento.js';
 import { dataBrasilia, isoBrasilia } from './prazos.js';
-import { ANTECEDENCIAS_AUDIENCIA, sincronizarAudiencia } from './audiencia.js';
+import { ANTECEDENCIAS_AUDIENCIA, removerLembreteAudiencia, sincronizarLembreteAudiencia } from './audiencia.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -322,10 +322,10 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
            ORDER BY cumprimento_prazo NULLS LAST, id`,
         ),
         db.all(
-          `SELECT id, numero, titulo, cliente, orgao, audiencia_data, audiencia_hora, audiencia_descricao
-           FROM processos
-           WHERE audiencia_data IS NOT NULL AND audiencia_data >= ? AND audiencia_data <= ?
-           ORDER BY audiencia_data, audiencia_hora NULLS LAST`,
+          `SELECT a.*, p.id AS processo_id, p.titulo AS processo_titulo
+           FROM audiencias a LEFT JOIN processos p ON p.numero = a.numero_processo
+           WHERE a.data >= ? AND a.data <= ?
+           ORDER BY a.data, a.hora NULLS LAST`,
           dataBrasilia(agora),
           dataBrasilia(new Date(Date.now() + 30 * 86_400_000).toISOString()),
         ),
@@ -362,22 +362,6 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.status = STATUS_PROC.includes(body.status) ? body.status : 'ativo';
     }
     if (!parcial || body.monitorar !== undefined) out.monitorar = body.monitorar === false || body.monitorar === 0 ? 0 : 1;
-    if (!parcial || body.audiencia_data !== undefined) {
-      const v = body.audiencia_data ? String(body.audiencia_data).slice(0, 10) : null;
-      if (v && !dataValida(v)) throw new Error('Data da audiência inválida.');
-      out.audiencia_data = v;
-    }
-    if (!parcial || body.audiencia_hora !== undefined) {
-      const v = body.audiencia_hora ? String(body.audiencia_hora).slice(0, 5) : null;
-      if (v && !horaValida(v)) throw new Error('Hora da audiência inválida.');
-      out.audiencia_hora = v;
-    }
-    if (!parcial || body.audiencia_descricao !== undefined) out.audiencia_descricao = texto(body.audiencia_descricao, 500);
-    if (body.audiencia_antecedencia_min !== undefined && body.audiencia_antecedencia_min !== null && body.audiencia_antecedencia_min !== '') {
-      const v = Number(body.audiencia_antecedencia_min);
-      if (!ANTECEDENCIAS_AUDIENCIA.includes(v)) throw new Error('Antecedência do aviso da audiência inválida.');
-      out.audiencia_antecedencia_min = v;
-    }
     if (!parcial || body.sei !== undefined) {
       const sei = texto(body.sei, 60);
       if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
@@ -456,10 +440,12 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
            SELECT p.*,
              (SELECT COUNT(*)::int FROM publicacoes pu WHERE pu.processo_id = p.id AND pu.lida = 0) AS pub_nao_lidas,
              (SELECT COUNT(*)::int FROM andamentos an WHERE an.processo_id = p.id AND an.lida = 0) AS and_nao_lidos,
-             (SELECT MIN(l.data_hora) FROM lembretes l WHERE l.processo_id = p.id AND l.concluido = 0) AS proximo_lembrete
+             (SELECT MIN(l.data_hora) FROM lembretes l WHERE l.processo_id = p.id AND l.concluido = 0) AS proximo_lembrete,
+             (SELECT a.data || COALESCE(' ' || a.hora, '') FROM audiencias a WHERE a.numero_processo = p.numero AND a.data >= ? ORDER BY a.data, a.hora NULLS LAST LIMIT 1) AS proxima_audiencia
            FROM processos p ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
          ) t
          ORDER BY (pub_nao_lidas + and_nao_lidos) > 0 DESC, atualizado_em DESC`,
+        dataBrasilia(agoraIso()),
         ...params,
       );
       res.json(rows);
@@ -512,6 +498,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       const p = await processoPorId(req.db, req.params.id);
       if (!p) return erro(res, 404, 'Processo não encontrado.');
+      p.audiencias = await req.db.all('SELECT * FROM audiencias WHERE numero_processo = ? ORDER BY data DESC, hora DESC NULLS LAST', p.numero);
       [p.publicacoes, p.andamentos, p.lembretes, p.providencias] = await Promise.all([
         req.db.all('SELECT * FROM publicacoes WHERE processo_id = ? ORDER BY data_disponibilizacao DESC, id DESC LIMIT 200', p.id),
         req.db.all('SELECT * FROM andamentos WHERE processo_id = ? ORDER BY data DESC LIMIT 300', p.id),
@@ -545,7 +532,6 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ...cols.map((c) => d[c]),
       );
       await sincronizarCumprimento(req.db, novo.id);
-      await sincronizarAudiencia(req.db, novo.id);
       res.status(201).json(novo);
       // Primeira verificação em segundo plano (cria a linha de base, sem avisos).
       if (novo.monitorar) emSegundoPlano(verificarProcesso(req.db, novo, { fetchFn }));
@@ -579,7 +565,6 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         );
       }
       await sincronizarCumprimento(req.db, atual.id);
-      await sincronizarAudiencia(req.db, atual.id);
       res.json(await req.db.get('SELECT * FROM processos WHERE id = ?', atual.id));
     }),
   );
@@ -893,6 +878,100 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const id = idNum(req.params.id);
       const r = id ? await req.db.run('DELETE FROM lembretes WHERE id = ?', id) : { rowCount: 0 };
       if (!r.rowCount) return erro(res, 404, 'Lembrete não encontrado.');
+      res.json({ ok: true });
+    }),
+  );
+
+  // ───────────── audiências (menu próprio) ─────────────
+  function dadosAudiencia(body, atual = {}) {
+    const b = { ...atual, ...body };
+    const numero = somenteDigitos(b.numero_processo);
+    if (numero && (numero.length !== 20 || !cnjValido(numero))) throw new Error('Número do processo inválido (padrão CNJ, 20 dígitos).');
+    const sei = texto(b.sei, 60);
+    if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
+    const data = b.data ? String(b.data).slice(0, 10) : '';
+    if (!dataValida(data)) throw new Error('Informe a data da audiência.');
+    const hora = b.hora ? String(b.hora).slice(0, 5) : null;
+    if (hora && !horaValida(hora)) throw new Error('Hora inválida.');
+    const antecedencia = Number(b.antecedencia_min ?? 1440);
+    if (!ANTECEDENCIAS_AUDIENCIA.includes(antecedencia)) throw new Error('Antecedência do aviso inválida.');
+    if (!numero && !sei && !texto(b.titulo)) throw new Error('Informe o número do processo, o SEI ou um nome para a audiência.');
+    return {
+      numero_processo: numero || null,
+      sei,
+      titulo: texto(b.titulo, 200),
+      data,
+      hora,
+      descricao: texto(b.descricao, 500),
+      observacoes: texto(b.observacoes, 5000),
+      antecedencia_min: antecedencia,
+    };
+  }
+
+  app.get(
+    '/api/audiencias',
+    a(async (req, res) => {
+      res.json(
+        await req.db.all(
+          `SELECT a.*, p.id AS processo_id, p.titulo AS processo_titulo, l.notificado_em AS aviso_enviado_em
+           FROM audiencias a
+           LEFT JOIN processos p ON p.numero = a.numero_processo
+           LEFT JOIN lembretes l ON l.origem = 'aud|' || a.id
+           ORDER BY a.data DESC, a.hora DESC NULLS LAST LIMIT 1000`,
+        ),
+      );
+    }),
+  );
+
+  app.post(
+    '/api/audiencias',
+    a(async (req, res) => {
+      let d;
+      try {
+        d = dadosAudiencia(req.body || {});
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const cols = Object.keys(d);
+      const nova = await req.db.get(
+        `INSERT INTO audiencias (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING *`,
+        ...cols.map((c) => d[c]),
+      );
+      await sincronizarLembreteAudiencia(req.db, nova.id);
+      res.status(201).json(nova);
+    }),
+  );
+
+  app.put(
+    '/api/audiencias/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const atual = id ? await req.db.get('SELECT * FROM audiencias WHERE id = ?', id) : undefined;
+      if (!atual) return erro(res, 404, 'Audiência não encontrada.');
+      let d;
+      try {
+        d = dadosAudiencia(req.body || {}, atual);
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const cols = Object.keys(d);
+      const salva = await req.db.get(
+        `UPDATE audiencias SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ? RETURNING *`,
+        ...cols.map((c) => d[c]),
+        id,
+      );
+      await sincronizarLembreteAudiencia(req.db, id);
+      res.json(salva);
+    }),
+  );
+
+  app.delete(
+    '/api/audiencias/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const r = id ? await req.db.run('DELETE FROM audiencias WHERE id = ?', id) : { rowCount: 0 };
+      if (!r.rowCount) return erro(res, 404, 'Audiência não encontrada.');
+      await removerLembreteAudiencia(req.db, id);
       res.json({ ok: true });
     }),
   );

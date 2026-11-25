@@ -21,10 +21,11 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
   - dá para fixar as mais importantes no topo;
   - não há monitoramento nem avisos;
   - o botão "Passar a acompanhar" transforma a anotação em processo monitorado.
-- **Audiência agendada** no cadastro do processo:
-  - campos de data, hora e tipo/local/link;
-  - aviso automático com a antecedência escolhida (1 h a 1 semana);
-  - etiqueta no processo e quadro "Próximas audiências" no Painel (próximos 30 dias).
+- **Audiências** (menu próprio):
+  - cada audiência tem nº do processo, nº SEI, data, hora, tipo/local/link, partes e observações;
+  - gera um lembrete automático com a antecedência escolhida (1 h a 1 semana);
+  - a lista se divide em "Próximas" e "Realizadas";
+  - aparece no Painel ("Próximas audiências") e como etiqueta no processo cadastrado com o mesmo número.
 - **Número do processo SEI** vinculado a cada processo judicial: botão de copiar e busca pelo número.
 - **Acompanhar o cumprimento de liminares deferidas:**
   - **situação:** pendente, em andamento, cumprida parcialmente ou cumprida;
@@ -163,7 +164,7 @@ api/index.js      ponto de entrada na Vercel (todas as rotas /api)
   classes_cnj.js  nomes oficiais das classes (TPU/SGT do CNJ), guardados no banco
   prazos.js       estimativa de prazos em dias úteis (para sugestões)
   cumprimento.js  cumprimento de liminares: lembretes de prazo e de cobrança
-  audiencia.js    audiência agendada no processo → lembrete automático
+  audiencia.js    audiências (menu próprio) → lembrete automático
   fontes.js       clientes DJEN (Comunica PJe) e DataJud
   monitor.js      verificação de publicações, andamentos e lembretes
   notificador.js  avisos no app, e-mail (nodemailer) e push (web-push)
