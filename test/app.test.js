@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '9');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '10');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -1036,4 +1036,36 @@ test('anotações gerais: criar, buscar, etiquetas, fixar, validar e passar a ac
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
   }
   assert.equal((await req(`/api/anotacoes/${a2.corpo.id}`, { metodo: 'DELETE' })).status, 200);
+});
+
+test('anotações: tipos de ação / assunto (subdivisão, filtro, renomear, juntar e remover)', async () => {
+  const criar = (titulo, categoria) => req('/api/anotacoes', { metodo: 'POST', corpo: { titulo, categoria } });
+  const ms1 = (await criar('MS 1', '  mandado  de segurança ')).corpo;
+  assert.equal(ms1.categoria, 'Mandado de segurança', 'espaços limpos e 1ª letra maiúscula');
+  await criar('MS 2', 'Mandado de segurança');
+  await criar('Lic 1', 'Licitações');
+  await criar('Lic 2', 'licitação');
+  await criar('Solta', '');
+
+  let cats = (await req('/api/anotacoes-categorias')).corpo;
+  assert.deepEqual(cats.categorias.map((x) => [x.nome, x.total]), [['Licitação', 1], ['Licitações', 1], ['Mandado de segurança', 2]]);
+  assert.equal(cats.semCategoria, 1);
+  assert.equal(cats.total, 5);
+
+  const titulos = async (qs) => (await req(`/api/anotacoes?${qs}`)).corpo.map((n) => n.titulo).sort();
+  assert.deepEqual(await titulos('categoria=mandado de segurança'), ['MS 1', 'MS 2'], 'filtro sem diferenciar maiúsculas');
+  assert.deepEqual(await titulos('categoria=__sem'), ['Solta']);
+
+  // Juntar "Licitação" em "Licitações".
+  const r = await req('/api/anotacoes-categorias/renomear', { metodo: 'POST', corpo: { de: 'Licitação', para: 'Licitações' } });
+  assert.equal(r.corpo.alteradas, 1);
+  assert.deepEqual(await titulos('categoria=Licitações'), ['Lic 1', 'Lic 2']);
+
+  // Remover um tipo: anotações vão para "sem tipo".
+  await req('/api/anotacoes-categorias/renomear', { metodo: 'POST', corpo: { de: 'Mandado de segurança', para: '' } });
+  cats = (await req('/api/anotacoes-categorias')).corpo;
+  assert.deepEqual(cats.categorias.map((x) => x.nome), ['Licitações']);
+  assert.equal(cats.semCategoria, 3);
+
+  for (const n of (await req('/api/anotacoes')).corpo) await req(`/api/anotacoes/${n.id}`, { metodo: 'DELETE' });
 });

@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS anotacoes (
   titulo TEXT NOT NULL,
   numero_processo TEXT,                    -- 20 dígitos (opcional)
   sei TEXT,
+  categoria TEXT,                          -- tipo de ação / assunto (subdivisão)
   etiquetas TEXT,                          -- separadas por vírgula
   texto TEXT,
   fixada INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +211,7 @@ const MIGRACOES = [
      fixada INTEGER NOT NULL DEFAULT 0,
      criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
      atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});`,
+  `ALTER TABLE anotacoes ADD COLUMN IF NOT EXISTS categoria TEXT;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

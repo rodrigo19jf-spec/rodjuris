@@ -163,6 +163,17 @@ h3 { font-size: 1rem; }
 .badge.ok { background: var(--ok-bg); color: var(--ok); }
 .badge.aviso { background: var(--warn-bg); color: var(--warn); }
 .badge.erro { background: var(--danger-bg); color: var(--danger); }
+.subabas { display: flex; gap: .4rem; align-items: center; overflow-x: auto; padding-bottom: .4rem; margin-bottom: .75rem; }
+.subaba {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px;
+  padding: .35rem .8rem; font: inherit; font-size: .85rem; font-weight: 500; cursor: pointer; white-space: nowrap;
+}
+.subaba:hover { background: var(--surface-2); }
+.subaba.ativa { background: var(--primary); border-color: var(--primary); color: var(--primary-text); }
+.subaba .cont { opacity: .75; font-size: .75rem; margin-left: .15rem; }
+.grupo-titulo { grid-column: 1 / -1; margin: .75rem 0 0; font-size: 1rem; border-bottom: 1px solid var(--border); padding-bottom: .35rem; }
+.grupo-titulo:first-child { margin-top: 0; }
+button.badge.categoria { border: 0; cursor: pointer; font: inherit; font-size: .75rem; font-weight: 600; background: var(--surface-2); color: var(--text); }
 button.badge.etiqueta { border: 0; cursor: pointer; font: inherit; font-size: .75rem; font-weight: 600; background: var(--info-bg); color: var(--primary); }
 button.badge.etiqueta:hover { filter: brightness(.95); }
 .badge.audiencia { background: var(--info-bg); color: var(--t-audiencia); }

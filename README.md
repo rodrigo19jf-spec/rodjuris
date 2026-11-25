@@ -16,6 +16,7 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
   - os registros podem ser editados e excluídos.
 - **Anotações gerais** (menu "Anotações"), para processos que você não precisa acompanhar:
   - cada anotação tem título, nº do processo e nº SEI (opcionais), etiquetas e texto livre;
+  - subdivisão por **tipo de ação / assunto** (como pastas): abas no topo, agrupamento em "Todas" e a janela "Organizar tipos", para renomear, juntar ou remover;
   - busca por qualquer palavra e filtro por etiqueta;
   - dá para fixar as mais importantes no topo;
   - não há monitoramento nem avisos;

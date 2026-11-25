@@ -898,6 +898,12 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
   );
 
   // ───────────── anotações gerais (sem monitoramento) ─────────────
+  /** "  mandado  de segurança " → "Mandado de segurança" (espaços limpos, 1ª letra maiúscula). */
+  function normalizarCategoria(v) {
+    const t = String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    return t ? t[0].toLocaleUpperCase('pt-BR') + t.slice(1) : null;
+  }
+
   function dadosAnotacao(body, atual = {}) {
     const b = { ...atual, ...body };
     const titulo = texto(b.titulo, 300);
@@ -914,6 +920,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       etiquetas: etiquetas || null,
       texto: texto(b.texto, 20000),
       fixada: b.fixada === true || b.fixada === 1 ? 1 : 0,
+      categoria: normalizarCategoria(b.categoria),
     };
   }
 
@@ -929,6 +936,12 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           "(titulo ILIKE ? OR texto ILIKE ? OR etiquetas ILIKE ? OR numero_processo LIKE ? OR regexp_replace(COALESCE(sei, ''), '[^0-9]', '', 'g') LIKE ?)",
         );
         params.push(q, q, q, qd ? `%${qd}%` : '#', qd ? `%${qd}%` : '#');
+      }
+      if (req.query.categoria === '__sem') {
+        where.push('categoria IS NULL');
+      } else if (req.query.categoria) {
+        where.push('LOWER(categoria) = LOWER(?)');
+        params.push(String(req.query.categoria));
       }
       if (req.query.etiqueta) {
         where.push("(', ' || COALESCE(etiquetas, '') || ',') ILIKE ?");
@@ -997,6 +1010,38 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     }),
   );
 
+  // Tipos (subdivisões) com a quantidade de anotações em cada um.
+  app.get(
+    '/api/anotacoes-categorias',
+    a(async (req, res) => {
+      const linhas = await req.db.all(
+        `SELECT categoria, COUNT(*)::int AS total FROM anotacoes GROUP BY categoria ORDER BY categoria NULLS LAST`,
+      );
+      res.json({
+        categorias: linhas.filter((l) => l.categoria).map((l) => ({ nome: l.categoria, total: l.total })),
+        semCategoria: linhas.find((l) => !l.categoria)?.total || 0,
+        total: linhas.reduce((s, l) => s + l.total, 0),
+      });
+    }),
+  );
+
+  // Renomear um tipo (também serve para juntar dois tipos) ou removê-lo (para = vazio → "sem tipo").
+  app.post(
+    '/api/anotacoes-categorias/renomear',
+    a(async (req, res) => {
+      const de = String(req.body?.de || '').trim();
+      if (!de) return erro(res, 400, 'Informe o tipo atual.');
+      const para = normalizarCategoria(req.body?.para);
+      const r = await req.db.run(
+        'UPDATE anotacoes SET categoria = ?, atualizado_em = ? WHERE LOWER(categoria) = LOWER(?)',
+        para,
+        agoraIso(),
+        de,
+      );
+      res.json({ alteradas: r.rowCount, para });
+    }),
+  );
+
   // Transforma a anotação em processo monitorado (o texto vai para as observações).
   app.post(
     '/api/anotacoes/:id/acompanhar',
@@ -1007,7 +1052,10 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (!n.numero_processo) return erro(res, 400, 'Informe o número do processo na anotação antes de passar a acompanhá-lo.');
       const existente = await req.db.get('SELECT id FROM processos WHERE numero = ?', n.numero_processo);
       if (existente) return erro(res, 409, 'Este processo já está cadastrado em Processos.');
-      const obs = [n.texto, n.etiquetas ? `Etiquetas: ${n.etiquetas}` : null].filter(Boolean).join('\n\n') || null;
+      const obs =
+        [n.texto, n.categoria ? `Tipo/assunto: ${n.categoria}` : null, n.etiquetas ? `Etiquetas: ${n.etiquetas}` : null]
+          .filter(Boolean)
+          .join('\n\n') || null;
       const novo = await req.db.get(
         `INSERT INTO processos (numero, titulo, sei, observacoes, tribunal, monitorar) VALUES (?, ?, ?, ?, ?, 1) RETURNING *`,
         n.numero_processo,

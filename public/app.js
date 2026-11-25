@@ -1055,9 +1055,9 @@ async function telaPublicacoes(c) {
 }
 
 // ───────────── anotações gerais ─────────────
-function formAnotacao(n = null, aoSalvar, etiquetasExistentes = []) {
+function formAnotacao(n = null, aoSalvar, etiquetasExistentes = [], categoriasExistentes = [], categoriaPadrao = '') {
   const editando = !!n?.id;
-  const base = n || {};
+  const base = n || { categoria: categoriaPadrao };
   abrirModal(editando ? 'Editar anotação' : 'Nova anotação', `
     <form id="form-nota">
       <div class="campo"><label for="n-titulo">Título *</label><input id="n-titulo" required maxlength="300" placeholder="Ex.: Ação de cobrança – Fornecedor X" value="${esc(base.titulo || '')}"></div>
@@ -1065,6 +1065,10 @@ function formAnotacao(n = null, aoSalvar, etiquetasExistentes = []) {
         <div class="campo"><label for="n-numero">Nº do processo (opcional)</label><input id="n-numero" inputmode="numeric" placeholder="0000000-00.0000.0.00.0000" value="${esc(formatarCnj(base.numero_processo || ''))}"></div>
         <div class="campo"><label for="n-sei">Nº SEI (opcional)</label><input id="n-sei" inputmode="numeric" placeholder="Ex.: 1320.01.0012345/2026-12" value="${esc(base.sei || '')}"></div>
       </div>
+      <div class="campo"><label for="n-cat">Tipo de ação / assunto</label>
+        <input id="n-cat" list="lista-categorias" maxlength="80" placeholder="Ex.: Mandado de Segurança, Licitações e contratos, Servidores…" value="${esc(base.categoria || '')}">
+        <datalist id="lista-categorias">${categoriasExistentes.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+        <div class="ajuda">Funciona como uma pasta: escolha um existente ou digite um novo.</div></div>
       <div class="campo"><label for="n-etiq">Etiquetas</label>
         <input id="n-etiq" list="lista-etiquetas" placeholder="Separe por vírgula. Ex.: FHEMIG, licitação, arquivado" value="${esc(base.etiquetas || '')}">
         <datalist id="lista-etiquetas">${etiquetasExistentes.map((e) => `<option value="${esc(e)}">`).join('')}</datalist></div>
@@ -1080,6 +1084,7 @@ function formAnotacao(n = null, aoSalvar, etiquetasExistentes = []) {
           titulo: $('#n-titulo', m).value,
           numero_processo: $('#n-numero', m).value,
           sei: $('#n-sei', m).value,
+          categoria: $('#n-cat', m).value,
           etiquetas: $('#n-etiq', m).value,
           texto: $('#n-texto', m).value,
           fixada: $('#n-fixar', m).checked,
@@ -1099,14 +1104,57 @@ function formAnotacao(n = null, aoSalvar, etiquetasExistentes = []) {
   });
 }
 
+/** Janela para renomear, juntar ou remover tipos de anotação. */
+function organizarTipos(cats, aoMudar) {
+  abrirModal('Organizar tipos', `
+    <p class="small muted" style="margin-top:0">Renomeie para corrigir ou padronizar. Para <strong>juntar</strong> dois tipos, renomeie um com o nome exato do outro. Ao remover, as anotações vão para "Sem tipo" (nada é apagado).</p>
+    <ul class="lista">${cats.categorias.map((x) => `<li class="item-linha" data-cat="${esc(x.nome)}">
+      <div class="corpo"><input class="novo-nome" value="${esc(x.nome)}" aria-label="Novo nome para ${esc(x.nome)}" maxlength="80">
+        <div class="small muted">${x.total} anotação(ões)</div></div>
+      <div class="acoes" style="flex-wrap:nowrap"><button class="btn pequeno salvar-tipo">Salvar</button><button class="btn pequeno perigo remover-tipo">Remover</button></div>
+    </li>`).join('')}</ul>
+    <footer><button type="button" class="btn" data-fechar>Fechar</button></footer>`, {
+    aoAbrir: (m, fechar) => {
+      const renomear = async (de, para) => {
+        const r = await api('/anotacoes-categorias/renomear', { metodo: 'POST', corpo: { de, para } });
+        toast(para ? `${r.alteradas} anotação(ões) agora em "${r.para}".` : `${r.alteradas} anotação(ões) movidas para "Sem tipo".`);
+        fechar();
+        aoMudar();
+      };
+      $$('.salvar-tipo', m).forEach((b) =>
+        b.addEventListener('click', () => {
+          const li = b.closest('li');
+          const novo = $('.novo-nome', li).value.trim();
+          if (!novo || novo === li.dataset.cat) return;
+          renomear(li.dataset.cat, novo);
+        }),
+      );
+      $$('.remover-tipo', m).forEach((b) =>
+        b.addEventListener('click', () => renomear(b.closest('li').dataset.cat, '')),
+      );
+    },
+  });
+}
+
 let filtroEtiqueta = '';
+let filtroCategoria = ''; // '' = todas; '__sem' = sem tipo
 async function telaAnotacoes(c) {
   definirTopo('Anotações', { acoes: `<button class="btn primario" id="nova-nota">${icone('mais')}<span class="so-desktop">Nova anotação</span></button>` });
-  const todas = await api('/anotacoes');
+  const [todas, cats] = await Promise.all([api('/anotacoes'), api('/anotacoes-categorias')]);
+  const nomesCategorias = cats.categorias.map((x) => x.nome);
+  if (filtroCategoria && filtroCategoria !== '__sem' && !nomesCategorias.some((n) => n.toLowerCase() === filtroCategoria.toLowerCase())) filtroCategoria = '';
+  if (filtroCategoria === '__sem' && !cats.semCategoria) filtroCategoria = '';
+  const categoriaPadrao = filtroCategoria && filtroCategoria !== '__sem' ? filtroCategoria : '';
   const etiquetas = [...new Set(todas.flatMap((n) => (n.etiquetas || '').split(',').map((e) => e.trim()).filter(Boolean)))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
   if (filtroEtiqueta && !etiquetas.includes(filtroEtiqueta)) filtroEtiqueta = '';
   c.innerHTML = `
     <p class="small muted" style="margin-top:0">Para guardar observações sobre processos que você <strong>não</strong> precisa acompanhar: aqui não há monitoramento de publicações nem avisos.</p>
+    ${cats.total ? `<div class="subabas" role="tablist" aria-label="Tipos de ação / assunto">
+      <button class="subaba ${!filtroCategoria ? 'ativa' : ''}" data-cat="">Todas <span class="cont">${cats.total}</span></button>
+      ${cats.categorias.map((x) => `<button class="subaba ${filtroCategoria.toLowerCase() === x.nome.toLowerCase() ? 'ativa' : ''}" data-cat="${esc(x.nome)}">${esc(x.nome)} <span class="cont">${x.total}</span></button>`).join('')}
+      ${cats.semCategoria && cats.categorias.length ? `<button class="subaba ${filtroCategoria === '__sem' ? 'ativa' : ''}" data-cat="__sem">Sem tipo <span class="cont">${cats.semCategoria}</span></button>` : ''}
+      ${cats.categorias.length ? '<button class="btn pequeno" id="organizar-tipos" style="margin-left:auto">Organizar tipos</button>' : ''}
+    </div>` : ''}
     <div class="filtros">
       <input type="search" id="busca-nota" placeholder="Buscar no título, texto, número ou SEI…" aria-label="Buscar anotações">
       ${etiquetas.length ? `<select id="filtro-etiqueta" aria-label="Etiqueta" style="width:auto">
@@ -1116,18 +1164,29 @@ async function telaAnotacoes(c) {
     </div>
     <div id="lista-notas" class="grade grade-2"></div>`;
   const recarregar = () => telaAnotacoes(c);
-  $('#nova-nota').onclick = () => formAnotacao(null, recarregar, etiquetas);
+  $('#nova-nota').onclick = () => formAnotacao(null, recarregar, etiquetas, nomesCategorias, categoriaPadrao);
+  $$('.subaba', c).forEach((b) =>
+    b.addEventListener('click', () => {
+      filtroCategoria = b.dataset.cat;
+      recarregar();
+    }),
+  );
+  $('#organizar-tipos')?.addEventListener('click', () => organizarTipos(cats, recarregar));
 
   const carregar = async () => {
     const q = $('#busca-nota').value.trim();
-    const lista = q || filtroEtiqueta ? await api(`/anotacoes?${new URLSearchParams({ q, etiqueta: filtroEtiqueta })}`) : todas;
+    const lista = q || filtroEtiqueta || filtroCategoria
+      ? await api(`/anotacoes?${new URLSearchParams({ q, etiqueta: filtroEtiqueta, categoria: filtroCategoria })}`)
+      : todas;
     const alvo = $('#lista-notas');
     if (!lista.length) {
-      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || filtroEtiqueta ? 'Nenhuma anotação encontrada.' : 'Nenhuma anotação ainda.<br><br><button class="btn primario" id="primeira-nota">Criar minha primeira anotação</button>'}</div>`;
-      $('#primeira-nota')?.addEventListener('click', () => formAnotacao(null, recarregar, etiquetas));
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || filtroEtiqueta || filtroCategoria ? 'Nenhuma anotação encontrada.' : 'Nenhuma anotação ainda.<br><br><button class="btn primario" id="primeira-nota">Criar minha primeira anotação</button>'}</div>`;
+      $('#primeira-nota')?.addEventListener('click', () => formAnotacao(null, recarregar, etiquetas, nomesCategorias));
       return;
     }
-    alvo.innerHTML = lista.map((n) => `
+    // Em "Todas" (sem busca), mostra as anotações agrupadas por tipo.
+    const agrupar = !filtroCategoria && !q && !filtroEtiqueta && cats.categorias.length > 0;
+    const cartao = (n) => `
       <article class="card nota">
         <div class="topo-card">
           <h3 style="margin:0">${n.fixada ? '📌 ' : ''}${esc(n.titulo)}</h3>
@@ -1136,6 +1195,7 @@ async function telaAnotacoes(c) {
           ${n.numero_processo ? `<span class="mono">${esc(formatarCnj(n.numero_processo))}</span> <button class="btn pequeno copiar" data-texto="${esc(formatarCnj(n.numero_processo))}">Copiar</button>` : ''}
           ${n.sei ? `<div>SEI: <span class="mono">${esc(n.sei)}</span> <button class="btn pequeno copiar" data-texto="${esc(n.sei)}">Copiar</button></div>` : ''}
         </div>` : ''}
+        ${n.categoria && filtroCategoria === '' && !agrupar ? `<div class="small" style="margin-top:.35rem"><button class="badge categoria" data-cat="${esc(n.categoria)}" title="Ver este tipo">📁 ${esc(n.categoria)}</button></div>` : ''}
         ${n.etiquetas ? `<div class="acoes small" style="margin-top:.4rem">${n.etiquetas.split(',').map((e) => e.trim()).filter(Boolean).map((e) => `<button class="badge etiqueta" data-etiqueta="${esc(e)}" title="Filtrar por esta etiqueta">${esc(e)}</button>`).join('')}</div>` : ''}
         ${n.texto ? `<div class="texto-publicacao ${n.texto.length > 280 ? 'recolhido' : ''}">${esc(n.texto)}</div>` : ''}
         <div class="small muted" style="margin-top:.5rem">Atualizada em ${fmtDataHora(n.atualizado_em)}</div>
@@ -1146,7 +1206,19 @@ async function telaAnotacoes(c) {
           ${n.numero_processo ? `<button class="btn pequeno acompanhar-nota" data-id="${n.id}" title="Cadastrar em Processos e monitorar publicações">Passar a acompanhar</button>` : ''}
           <button class="btn pequeno perigo excluir-nota" data-id="${n.id}">Excluir</button>
         </div>
-      </article>`).join('');
+      </article>`;
+    if (agrupar) {
+      const grupos = [...cats.categorias.map((x) => x.nome), null];
+      alvo.innerHTML = grupos
+        .map((g) => {
+          const itens = lista.filter((n) => (n.categoria || null) === g);
+          if (!itens.length) return '';
+          return `<h2 class="grupo-titulo">${g ? esc(g) : 'Sem tipo'} <span class="muted small">(${itens.length})</span></h2>${itens.map(cartao).join('')}`;
+        })
+        .join('');
+    } else {
+      alvo.innerHTML = lista.map(cartao).join('');
+    }
 
     const achar = (id) => lista.find((n) => String(n.id) === String(id));
     $$('.expandir-nota', alvo).forEach((b) =>
@@ -1168,7 +1240,13 @@ async function telaAnotacoes(c) {
         recarregar();
       }),
     );
-    $$('.editar-nota', alvo).forEach((b) => b.addEventListener('click', () => formAnotacao(achar(b.dataset.id), recarregar, etiquetas)));
+    $$('.editar-nota', alvo).forEach((b) => b.addEventListener('click', () => formAnotacao(achar(b.dataset.id), recarregar, etiquetas, nomesCategorias)));
+    $$('.categoria', alvo).forEach((b) =>
+      b.addEventListener('click', () => {
+        filtroCategoria = b.dataset.cat;
+        recarregar();
+      }),
+    );
     $$('.fixar-nota', alvo).forEach((b) =>
       b.addEventListener('click', async () => {
         await api(`/anotacoes/${b.dataset.id}`, { metodo: 'PUT', corpo: { fixada: b.dataset.fixada !== '1' } });
