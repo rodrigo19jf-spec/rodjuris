@@ -330,9 +330,16 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           dataBrasilia(new Date(Date.now() + 30 * 86_400_000).toISOString()),
         ),
         db.all(
-          `SELECT an.id, an.processo_id, an.data, an.nome, an.complemento, an.fonte, p.titulo AS processo_titulo, p.numero AS processo_numero
-           FROM andamentos an JOIN processos p ON p.id = an.processo_id
-           WHERE an.lida = 0 ORDER BY an.data DESC NULLS LAST, an.id DESC LIMIT 10`,
+          // Agrupado por processo: quantidade de andamentos novos + o mais recente.
+          `SELECT * FROM (
+             SELECT p.id AS processo_id, p.titulo AS processo_titulo, p.numero AS processo_numero, COUNT(*)::int AS total,
+               (SELECT u.nome FROM andamentos u WHERE u.processo_id = p.id AND u.lida = 0 ORDER BY u.data DESC NULLS LAST, u.id DESC LIMIT 1) AS ultimo_nome,
+               (SELECT u.data FROM andamentos u WHERE u.processo_id = p.id AND u.lida = 0 ORDER BY u.data DESC NULLS LAST, u.id DESC LIMIT 1) AS ultima_data,
+               (SELECT u.fonte FROM andamentos u WHERE u.processo_id = p.id AND u.lida = 0 ORDER BY u.data DESC NULLS LAST, u.id DESC LIMIT 1) AS fonte
+             FROM andamentos an JOIN processos p ON p.id = an.processo_id
+             WHERE an.lida = 0
+             GROUP BY p.id, p.titulo, p.numero
+           ) t ORDER BY ultima_data DESC NULLS LAST, processo_id DESC LIMIT 10`,
         ),
       ]);
       res.json({

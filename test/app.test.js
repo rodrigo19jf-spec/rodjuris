@@ -1121,9 +1121,12 @@ test('painel: lista de andamentos novos e "marcar como vistos"', async () => {
     proc.id,
   );
   const painel = (await req('/api/painel')).corpo;
-  const meus = painel.andamentosNovos.filter((a) => a.processo_id === proc.id);
-  assert.deepEqual(meus.map((a) => a.nome), ['Conclusos para decisão', 'Juntada de petição'], 'mais recentes primeiro');
-  assert.equal(meus[0].processo_titulo, 'Caso andamentos');
+  const meu = painel.andamentosNovos.find((g) => g.processo_id === proc.id);
+  assert.equal(meu.total, 2, 'agrupado por processo');
+  assert.equal(meu.ultimo_nome, 'Conclusos para decisão', 'mostra o mais recente');
+  assert.equal(meu.ultima_data, '2026-11-21T10:00:00.000Z');
+  assert.equal(meu.processo_titulo, 'Caso andamentos');
+  assert.equal(meu.fonte, 'eproc');
   assert.ok(painel.andamentosNaoLidos >= 2);
   assert.equal((await req('/api/andamentos/marcar-todos', { metodo: 'POST' })).status, 200);
   const depois = (await req('/api/painel')).corpo;
