@@ -157,7 +157,9 @@ async function abrirPostgres(urlOriginal) {
     onnotice: () => {},
     ssl: /localhost|127\.0\.0\.1/.test(url) || /sslmode=disable/.test(url) ? false : 'require',
   });
-  await sql.unsafe(SCHEMA);
+  // Cria as tabelas só na primeira vez (deixa as partidas a frio da Vercel mais rápidas).
+  const [{ existe }] = await sql.unsafe("SELECT to_regclass('public.push_subscriptions') IS NOT NULL AS existe");
+  if (!existe) await sql.unsafe(SCHEMA);
   return criarApi(
     async (texto, params) => {
       const r = await sql.unsafe(texto, params);

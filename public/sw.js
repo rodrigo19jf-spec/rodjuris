@@ -1,5 +1,5 @@
 // Service worker: cache do app (funciona offline para abrir) + notificações push.
-const CACHE = 'rodjuris-v1';
+const CACHE = 'rodjuris-v2';
 const ARQUIVOS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

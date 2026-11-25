@@ -8,13 +8,25 @@ function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-async function api(caminho, { metodo = 'GET', corpo } = {}) {
-  const res = await fetch(`/api${caminho}`, {
-    method: metodo,
-    headers: corpo !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: corpo !== undefined ? JSON.stringify(corpo) : undefined,
-    credentials: 'same-origin',
-  });
+async function api(caminho, { metodo = 'GET', corpo, limiteMs } = {}) {
+  // Verificações no CNJ podem demorar; as demais chamadas desistem em 30 s.
+  const lento = /verificar|diagnostico|consultar/.test(caminho);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), limiteMs ?? (lento ? 90_000 : 30_000));
+  let res;
+  try {
+    res = await fetch(`/api${caminho}`, {
+      method: metodo,
+      headers: corpo !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: corpo !== undefined ? JSON.stringify(corpo) : undefined,
+      credentials: 'same-origin',
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    throw new Error(err?.name === 'AbortError' ? 'O servidor demorou demais para responder. Tente de novo.' : 'Sem conexão com o servidor. Verifique sua internet e tente de novo.');
+  } finally {
+    clearTimeout(timer);
+  }
   const dados = await res.json().catch(() => ({}));
   if (res.status === 401 && !caminho.startsWith('/auth')) {
     iniciar();
@@ -271,7 +283,8 @@ async function rotear() {
     else if (raiz === 'config') await telaConfig(c);
     else c.innerHTML = '<p class="vazio">Página não encontrada.</p>';
   } catch (err) {
-    c.innerHTML = `<div class="alerta-caixa erro">${esc(err.message)}</div>`;
+    c.innerHTML = `<div class="alerta-caixa erro">${esc(err.message)}</div><p><button class="btn" id="tentar-de-novo">Tentar de novo</button></p>`;
+    $('#tentar-de-novo')?.addEventListener('click', rotear);
   }
   window.scrollTo(0, 0);
 }
