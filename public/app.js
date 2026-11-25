@@ -435,7 +435,7 @@ async function rotear() {
   $('#painel-avisos').hidden = true;
   try {
     if (raiz === 'painel') await telaPainel(c);
-    else if (raiz === 'processos' && partes[1]) await telaProcesso(c, partes[1]);
+    else if (raiz === 'processos' && partes[1]) await telaProcesso(c, partes[1], new URLSearchParams(hash.split('?')[1] || '').get('aba') || undefined);
     else if (raiz === 'processos') await telaProcessos(c);
     else if (raiz === 'publicacoes') await telaPublicacoes(c);
     else if (raiz === 'agenda') await telaAgenda(c);
@@ -550,10 +550,11 @@ async function telaPainel(c) {
     <div class="grade grade-stats">
       <a class="card stat cor-azul" href="#/processos"><span class="stat-icone">${icone('processos')}</span><div><div class="valor">${d.processosAtivos}</div><div class="rotulo">Processos ativos</div></div></a>
       <a class="card stat cor-verde" href="#/processos"><span class="stat-icone">${icone('atualizar')}</span><div><div class="valor">${d.processosMonitorados}</div><div class="rotulo">Monitorados</div></div></a>
+      <a class="card stat cor-roxo ${d.andamentosNaoLidos ? 'alerta' : ''}" href="#andamentos-novos"><span class="stat-icone">${icone('processos')}</span><div><div class="valor">${d.andamentosNaoLidos}</div><div class="rotulo">Andamentos novos</div></div></a>
       <a class="card stat cor-dourado ${d.publicacoesNaoLidas ? 'alerta' : ''}" href="#/publicacoes"><span class="stat-icone">${icone('publicacoes')}</span><div><div class="valor">${d.publicacoesNaoLidas}</div><div class="rotulo">Publicações novas</div></div></a>
       <a class="card stat cor-vermelho ${d.lembretesAtrasados ? 'alerta' : ''}" href="#/lembretes"><span class="stat-icone">${icone('lembretes')}</span><div><div class="valor">${d.lembretesAtrasados}</div><div class="rotulo">Lembretes atrasados</div></div></a>
     </div>
-    <p class="small muted" style="margin-top:.75rem">Última verificação automática: ${d.ultimaVerificacao ? `${fmtDataHora(d.ultimaVerificacao)} (${relativo(d.ultimaVerificacao)})` : 'ainda não realizada'}${d.andamentosNaoLidos ? ` · <a href="#/processos">${d.andamentosNaoLidos} andamento(s) novo(s)</a>` : ''}</p>
+    <p class="small muted" style="margin-top:.75rem">Última verificação automática: ${d.ultimaVerificacao ? `${fmtDataHora(d.ultimaVerificacao)} (${relativo(d.ultimaVerificacao)})` : 'ainda não realizada'}</p>
     ${d.avisosEproc?.length ? `<section class="card" style="margin-top:1rem;border-color:var(--warn)">
       <div class="secao-titulo" style="margin-top:0"><h2>⚖️ Intimações pendentes no eproc (${d.avisosEproc.length})</h2>
         <a class="btn pequeno" href="https://eproc1g.tjmg.jus.br/eproc/" target="_blank" rel="noopener">Abrir o eproc</a></div>
@@ -583,6 +584,15 @@ async function telaPainel(c) {
         <div class="pilha" id="lista-proximos">${d.proximos.length ? d.proximos.map((l) => htmlLembrete(l)).join('') : '<div class="card vazio">Nada agendado para os próximos dias.</div>'}</div>
       </section>
       <section>
+        <div class="secao-titulo" id="andamentos-novos"><h2>Andamentos novos ${d.andamentosNaoLidos ? `<span class="badge novo">${d.andamentosNaoLidos}</span>` : ''}</h2>
+          ${d.andamentosNaoLidos ? '<button class="btn pequeno" id="marcar-andamentos">Marcar como vistos</button>' : ''}</div>
+        <div class="card">${d.andamentosNovos?.length ? `<ul class="lista">${d.andamentosNovos.map((a) => `
+          <li class="nao-lida"><a href="#/processos/${a.processo_id}?aba=andamentos" style="color:inherit;display:block">
+            <div class="acoes small"><strong>${fmtDataHora(a.data)}</strong><span class="badge">${{ pje: 'PJe TJMG', eproc: 'eproc TJMG' }[a.fonte] || 'DataJud'}</span></div>
+            <div style="font-weight:600">${esc(a.nome)}</div>
+            <div class="small muted">${esc(a.processo_titulo || formatarCnj(a.processo_numero))}</div></a></li>`).join('')}</ul>
+            ${d.andamentosNaoLidos > d.andamentosNovos.length ? `<p class="small muted" style="margin:.5rem 0 0">E mais ${d.andamentosNaoLidos - d.andamentosNovos.length} em outros processos.</p>` : ''}`
+          : '<p class="vazio">Nenhum andamento novo.</p>'}</div>
         <div class="secao-titulo"><h2>Publicações não lidas</h2><a class="small" href="#/publicacoes">Ver todas</a></div>
         <div class="card">${d.publicacoes.length ? `<ul class="lista">${d.publicacoes.map((p) => `
           <li class="nao-lida"><a href="${p.processo_id ? `#/processos/${p.processo_id}` : '#/publicacoes'}" style="color:inherit;display:block">
@@ -594,6 +604,16 @@ async function telaPainel(c) {
   ligarLembretes(c, d.proximos, () => telaPainel(c));
   $$('.cadastrar-de-pub', c).forEach((b) => b.addEventListener('click', () => formProcesso({ numero: b.dataset.numero })));
   $('#novo-lembrete').onclick = () => formLembrete(null, () => telaPainel(c));
+  $('#marcar-andamentos')?.addEventListener('click', async () => {
+    await api('/andamentos/marcar-todos', { metodo: 'POST' });
+    toast('Andamentos marcados como vistos.');
+    atualizarContadores();
+    telaPainel(c);
+  });
+  $('a.stat[href="#andamentos-novos"]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    $('#andamentos-novos')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   $('#verificar-agora').onclick = (e) => verificarAgora(e.currentTarget, () => telaPainel(c));
 }
 

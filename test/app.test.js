@@ -1112,3 +1112,22 @@ test('anotações: tipos de ação / assunto (subdivisão, filtro, renomear, jun
 
   for (const n of (await req('/api/anotacoes')).corpo) await req(`/api/anotacoes/${n.id}`, { metodo: 'DELETE' });
 });
+
+test('painel: lista de andamentos novos e "marcar como vistos"', async () => {
+  const proc = await db.get("INSERT INTO processos (numero, titulo, monitorar) VALUES (?, 'Caso andamentos', 0) RETURNING id", gerarCnj(9696969));
+  await db.run(
+    "INSERT INTO andamentos (processo_id, external_key, data, nome, lida, fonte) VALUES (?, 'k1', '2026-11-20T10:00:00.000Z', 'Juntada de petição', 0, 'eproc'), (?, 'k2', '2026-11-21T10:00:00.000Z', 'Conclusos para decisão', 0, 'eproc')",
+    proc.id,
+    proc.id,
+  );
+  const painel = (await req('/api/painel')).corpo;
+  const meus = painel.andamentosNovos.filter((a) => a.processo_id === proc.id);
+  assert.deepEqual(meus.map((a) => a.nome), ['Conclusos para decisão', 'Juntada de petição'], 'mais recentes primeiro');
+  assert.equal(meus[0].processo_titulo, 'Caso andamentos');
+  assert.ok(painel.andamentosNaoLidos >= 2);
+  assert.equal((await req('/api/andamentos/marcar-todos', { metodo: 'POST' })).status, 200);
+  const depois = (await req('/api/painel')).corpo;
+  assert.equal(depois.andamentosNaoLidos, 0);
+  assert.equal(depois.andamentosNovos.length, 0);
+  await db.run('DELETE FROM processos WHERE id = ?', proc.id);
+});

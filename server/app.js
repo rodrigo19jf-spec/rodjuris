@@ -291,7 +291,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const db = req.db;
       const agora = agoraIso();
       const em7 = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares, audiencias] = await Promise.all([
+      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares, audiencias, andamentosNovos] = await Promise.all([
         db.valor("SELECT COUNT(*)::int FROM processos WHERE status = 'ativo'"),
         db.valor("SELECT COUNT(*)::int FROM processos WHERE monitorar = 1 AND status <> 'encerrado'"),
         db.valor('SELECT COUNT(*)::int FROM publicacoes WHERE lida = 0'),
@@ -329,12 +329,18 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           dataBrasilia(agora),
           dataBrasilia(new Date(Date.now() + 30 * 86_400_000).toISOString()),
         ),
+        db.all(
+          `SELECT an.id, an.processo_id, an.data, an.nome, an.complemento, an.fonte, p.titulo AS processo_titulo, p.numero AS processo_numero
+           FROM andamentos an JOIN processos p ON p.id = an.processo_id
+           WHERE an.lida = 0 ORDER BY an.data DESC NULLS LAST, an.id DESC LIMIT 10`,
+        ),
       ]);
       res.json({
         processosAtivos: ativos,
         processosMonitorados: monitorados,
         publicacoesNaoLidas: pubNaoLidas,
         andamentosNaoLidos: andNaoLidos,
+        andamentosNovos,
         lembretesAtrasados: atrasados,
         proximos,
         publicacoes,
@@ -767,6 +773,14 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       const id = idNum(req.params.id);
       if (id) await req.db.run('UPDATE publicacoes SET lida = ? WHERE id = ?', req.body?.lida === false ? 0 : 1, id);
+      res.json({ ok: true });
+    }),
+  );
+
+  app.post(
+    '/api/andamentos/marcar-todos',
+    a(async (req, res) => {
+      await req.db.run('UPDATE andamentos SET lida = 1 WHERE lida = 0');
       res.json({ ok: true });
     }),
   );
