@@ -73,15 +73,35 @@ export function definirEnvioPush(fn) {
   enviarPushImpl = fn;
 }
 
+/**
+ * Contato do remetente nas notificações (exigido pelo padrão Web Push).
+ * A Apple recusa endereços inválidos como "mailto:...@localhost", então usamos o endereço do próprio site.
+ */
+export function contatoPush(env = process.env) {
+  if (env.VAPID_SUBJECT) return env.VAPID_SUBJECT;
+  const site = env.APP_URL || env.VERCEL_PROJECT_PRODUCTION_URL || env.VERCEL_URL;
+  if (site) return site.startsWith('http') ? site : `https://${site}`;
+  return 'mailto:avisos@rodjuris.app';
+}
+
+function tipoAparelho(endpoint) {
+  if (/push\.apple\.com/.test(endpoint)) return 'iPhone/iPad/Mac (Apple)';
+  if (/fcm\.googleapis|android/.test(endpoint)) return 'Android/Chrome';
+  if (/mozilla/.test(endpoint)) return 'Firefox';
+  if (/windows|notify\.windows/.test(endpoint)) return 'Windows/Edge';
+  return 'navegador';
+}
+
 export async function enviarPush(db, titulo, mensagem, link) {
   const subs = await db.all('SELECT endpoint, dados FROM push_subscriptions');
-  if (subs.length === 0) return { enviados: 0 };
+  if (subs.length === 0) return { enviados: 0, inscritos: 0, falhas: [] };
   const { publicKey, privateKey } = await chavesVapid(db);
   const vapidDetails = {
-    subject: process.env.VAPID_SUBJECT || 'mailto:rodjuris@localhost',
+    subject: contatoPush(),
     publicKey,
     privateKey,
   };
+  const falhas = [];
   const payload = JSON.stringify({ title: titulo, body: mensagem, url: link || '/' });
   let enviados = 0;
   for (const s of subs) {
@@ -90,14 +110,19 @@ export async function enviarPush(db, titulo, mensagem, link) {
       enviados++;
     } catch (err) {
       // 404/410: inscrição expirada (ex.: usuário revogou a permissão) — remove.
-      if (err?.statusCode === 404 || err?.statusCode === 410) {
-        await db.run('DELETE FROM push_subscriptions WHERE endpoint = ?', s.endpoint);
-      } else {
-        console.error('[push] falha ao enviar:', err?.message || err);
-      }
+      const expirada = err?.statusCode === 404 || err?.statusCode === 410;
+      if (expirada) await db.run('DELETE FROM push_subscriptions WHERE endpoint = ?', s.endpoint);
+      console.error('[push] falha ao enviar:', err?.statusCode, err?.body || err?.message || err);
+      falhas.push({
+        aparelho: tipoAparelho(s.endpoint),
+        status: err?.statusCode || null,
+        motivo: expirada
+          ? 'cadastro expirado ou permissão retirada — ative de novo neste aparelho'
+          : String(err?.body || err?.message || err).slice(0, 200),
+      });
     }
   }
-  return { enviados };
+  return { enviados, inscritos: subs.length, falhas };
 }
 
 /**

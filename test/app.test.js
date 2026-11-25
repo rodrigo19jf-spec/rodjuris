@@ -1134,3 +1134,37 @@ test('painel: lista de andamentos novos e "marcar como vistos"', async () => {
   assert.equal(depois.andamentosNovos.length, 0);
   await db.run('DELETE FROM processos WHERE id = ?', proc.id);
 });
+
+test('push: contato válido para a Apple e motivo da falha no teste', async () => {
+  const { contatoPush } = await import('../server/notificador.js');
+  assert.equal(contatoPush({ VERCEL_PROJECT_PRODUCTION_URL: 'rodjuris.vercel.app' }), 'https://rodjuris.vercel.app');
+  assert.equal(contatoPush({ VAPID_SUBJECT: 'mailto:eu@exemplo.com', VERCEL_URL: 'x.vercel.app' }), 'mailto:eu@exemplo.com');
+  assert.doesNotMatch(contatoPush({}), /localhost/);
+
+  await db.run('DELETE FROM push_subscriptions');
+  assert.deepEqual((await req('/api/push/testar', { metodo: 'POST' })).corpo, { enviados: 0, inscritos: 0, falhas: [] });
+
+  await db.run("INSERT INTO push_subscriptions (endpoint, dados) VALUES ('https://web.push.apple.com/abc', '{}')");
+  definirEnvioPush(async () => {
+    const e = new Error('Received unexpected response code');
+    e.statusCode = 403;
+    e.body = '{"reason":"BadJwtToken"}';
+    throw e;
+  });
+  const r = (await req('/api/push/testar', { metodo: 'POST' })).corpo;
+  assert.equal(r.enviados, 0);
+  assert.equal(r.inscritos, 1);
+  assert.equal(r.falhas[0].aparelho, 'iPhone/iPad/Mac (Apple)');
+  assert.equal(r.falhas[0].status, 403);
+  assert.match(r.falhas[0].motivo, /BadJwtToken/);
+
+  definirEnvioPush(async () => {
+    const e = new Error('Gone');
+    e.statusCode = 410;
+    throw e;
+  });
+  const r2 = (await req('/api/push/testar', { metodo: 'POST' })).corpo;
+  assert.match(r2.falhas[0].motivo, /ative de novo/);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM push_subscriptions'), 0, 'cadastro expirado é removido');
+  definirEnvioPush(async (sub, payload) => pushes.push(JSON.parse(payload)));
+});

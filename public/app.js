@@ -42,7 +42,7 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add('visivel');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('visivel'), 3500);
+  toastTimer = setTimeout(() => t.classList.remove('visivel'), Math.max(3500, String(msg).length * 70));
 }
 
 function formatarCnj(n) {
@@ -1736,6 +1736,12 @@ async function telaConfig(c) {
   });
   $('#push-teste')?.addEventListener('click', async () => {
     const r = await api('/push/testar', { metodo: 'POST' });
+    if (!r.enviados) {
+      const det = (r.falhas || []).map((f) => `${f.aparelho}: ${f.status ? `HTTP ${f.status} — ` : ''}${f.motivo}`).join(' | ');
+      toast(r.inscritos ? `Nenhum aparelho recebeu. ${det}` : 'Nenhum aparelho cadastrado. Abra o app no celular (pelo ícone) e toque em "Ativar neste aparelho".');
+      telaConfig(c);
+      return;
+    }
     toast(`Teste enviado para ${r.enviados} aparelho(s).`);
   });
   $('#form-senha').onsubmit = async (e) => {
