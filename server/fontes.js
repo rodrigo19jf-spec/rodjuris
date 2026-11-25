@@ -25,7 +25,10 @@ function dataYmd(d) {
 
 // Erros temporários do servidor (sobrecarga, manutenção): vale tentar de novo.
 const STATUS_TEMPORARIOS = new Set([429, 500, 502, 503, 504]);
-const ESPERAS_MS = [2_000, 6_000]; // pausas entre as tentativas (3 tentativas no total)
+// Na Vercel cada execução tem no máximo 60 s: menos espera e menos tentativas.
+const SERVERLESS = !!process.env.VERCEL;
+const TIMEOUT_MS = SERVERLESS ? 15_000 : 30_000;
+const ESPERAS_MS = SERVERLESS ? [1_500] : [2_000, 6_000]; // pausas entre as tentativas
 
 export class ErroFonte extends Error {
   constructor(mensagem, { status, temporario = false } = {}) {
@@ -52,7 +55,7 @@ function mensagemErro(url, status) {
 
 async function tentativaJson(fetchFn, url, init) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30_000);
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
     const res = await fetchFn(url, {
       ...init,
@@ -206,23 +209,26 @@ export async function buscarProcessoDataJud(numero, { fetchFn = fetch } = {}) {
 
 /** Testa a conexão com o DJEN e o DataJud. Usado pelo botão em Ajustes e pelo script de diagnóstico. */
 export async function testarConexoes(numero = '00008323520184013202', { fetchFn = fetch } = {}) {
-  const resultados = [];
-  try {
-    const desde = new Date(Date.now() - 365 * 86_400_000);
-    const pubs = await buscarPublicacoesDjen({ numeroProcesso: numero }, desde, { fetchFn, maxPaginas: 1 });
-    resultados.push({ fonte: 'DJEN (publicações)', ok: true, mensagem: `Conectado — ${pubs.length} publicação(ões) no último ano para o processo de teste.` });
-  } catch (err) {
-    resultados.push({ fonte: 'DJEN (publicações)', ok: false, mensagem: err.message });
-  }
-  try {
-    const dj = await buscarProcessoDataJud(numero, { fetchFn });
-    resultados.push({
-      fonte: 'DataJud (andamentos)',
-      ok: true,
-      mensagem: dj ? `Conectado — ${dj.movimentos.length} andamento(s) no processo de teste.` : 'Conectado — processo de teste não encontrado na base.',
-    });
-  } catch (err) {
-    resultados.push({ fonte: 'DataJud (andamentos)', ok: false, mensagem: err.message });
-  }
-  return resultados;
+  const djen = (async () => {
+    try {
+      const desde = new Date(Date.now() - 365 * 86_400_000);
+      const pubs = await buscarPublicacoesDjen({ numeroProcesso: numero }, desde, { fetchFn, maxPaginas: 1 });
+      return { fonte: 'DJEN (publicações)', ok: true, mensagem: `Conectado — ${pubs.length} publicação(ões) no último ano para o processo de teste.` };
+    } catch (err) {
+      return { fonte: 'DJEN (publicações)', ok: false, mensagem: err.message };
+    }
+  })();
+  const datajud = (async () => {
+    try {
+      const dj = await buscarProcessoDataJud(numero, { fetchFn });
+      return {
+        fonte: 'DataJud (andamentos)',
+        ok: true,
+        mensagem: dj ? `Conectado — ${dj.movimentos.length} andamento(s) no processo de teste.` : 'Conectado — processo de teste não encontrado na base.',
+      };
+    } catch (err) {
+      return { fonte: 'DataJud (andamentos)', ok: false, mensagem: err.message };
+    }
+  })();
+  return Promise.all([djen, datajud]);
 }

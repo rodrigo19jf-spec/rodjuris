@@ -66,14 +66,25 @@ async function req(caminho, { metodo = 'GET', corpo, semCookie = false } = {}) {
 }
 
 before(async () => {
-  db = openDb(':memory:');
+  const url = process.env.TEST_DATABASE_URL;
+  if (url) {
+    // Postgres de verdade: começa de um banco limpo.
+    const { default: postgres } = await import('postgres');
+    const sql = postgres(url, { onnotice: () => {} });
+    await sql.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+    await sql.end();
+  }
+  db = await openDb(url || ':memory:');
   definirTransporteEmail({ sendMail: async (m) => emails.push(m) });
   definirEnvioPush(async (sub, payload) => pushes.push(JSON.parse(payload)));
   const app = criarApp(db, { fetchFn: fetchFalso });
   await new Promise((r) => (servidor = app.listen(0, r)));
   base = `http://127.0.0.1:${servidor.address().port}`;
 });
-after(() => servidor?.close());
+after(async () => {
+  servidor?.close();
+  await db?.close();
+});
 
 test('número CNJ: validação, formatação e tribunal', () => {
   assert.ok(cnjValido(NUM));
@@ -119,20 +130,20 @@ test('cadastro de processo valida o número e consulta o DataJud', async () => {
 });
 
 test('primeira verificação cria a linha de base sem avisar; novidades depois geram aviso, e-mail e push', async () => {
-  setConfig(db, 'email_ativo', '1');
-  setConfig(db, 'email_destino', 'advogado@example.com');
-  db.prepare("INSERT INTO push_subscriptions (endpoint, dados) VALUES ('https://push.example/1', '{}')").run();
+  await setConfig(db, 'email_ativo', '1');
+  await setConfig(db, 'email_destino', 'advogado@example.com');
+  await db.run("INSERT INTO push_subscriptions (endpoint, dados) VALUES ('https://push.example/1', '{}')");
 
   // Aguarda a verificação em segundo plano disparada pelo cadastro.
-  for (let i = 0; i < 50 && !db.prepare('SELECT ultima_verificacao FROM processos').get().ultima_verificacao; i++) {
+  for (let i = 0; i < 50 && !(await db.get('SELECT ultima_verificacao FROM processos')).ultima_verificacao; i++) {
     await new Promise((r) => setTimeout(r, 20));
   }
-  const proc = db.prepare('SELECT * FROM processos').get();
+  const proc = (await db.get('SELECT * FROM processos'));
   assert.ok(proc.ultima_verificacao, 'linha de base criada');
   assert.equal(proc.classe, 'Procedimento Comum Cível', 'dados do DataJud preenchidos');
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM publicacoes WHERE lida = 0').get().n, 0);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM andamentos').get().n, 1);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM notificacoes').get().n, 0);
+  assert.equal((await db.get('SELECT COUNT(*)::int n FROM publicacoes WHERE lida = 0')).n, 0);
+  assert.equal((await db.get('SELECT COUNT(*)::int n FROM andamentos')).n, 1);
+  assert.equal((await db.get('SELECT COUNT(*)::int n FROM notificacoes')).n, 0);
 
   // Nova publicação e novo andamento.
   djen.porProcesso[NUM].push(pub(2, NUM, 'Intime-se o autor para manifestação em 15 dias.'));
@@ -143,7 +154,7 @@ test('primeira verificação cria a linha de base sem avisar; novidades depois g
   assert.equal(r.andamentos, 1);
   assert.deepEqual(r.erros, []);
 
-  const avisos = db.prepare('SELECT * FROM notificacoes ORDER BY id').all();
+  const avisos = (await db.all('SELECT * FROM notificacoes ORDER BY id'));
   assert.equal(avisos.length, 2);
   assert.match(avisos[0].titulo, /1 nova\(s\) publicação/);
   assert.match(avisos[1].titulo, /1 novo\(s\) andamento/);
@@ -166,24 +177,24 @@ test('primeira verificação cria a linha de base sem avisar; novidades depois g
 });
 
 test('monitoramento pela OAB vincula publicações a processos cadastrados', async () => {
-  setConfig(db, 'oab_numero', '123456');
-  setConfig(db, 'oab_uf', 'SP');
+  await setConfig(db, 'oab_numero', '123456');
+  await setConfig(db, 'oab_uf', 'SP');
   djen.porOab = [pub(10, NUM_OUTRO, 'Antiga')];
   await verificarTudo(db, { fetchFn: fetchFalso, pausaMs: 0 }); // linha de base da OAB
-  const antes = db.prepare('SELECT COUNT(*) n FROM notificacoes').get().n;
+  const antes = (await db.get('SELECT COUNT(*)::int n FROM notificacoes')).n;
 
   djen.porOab.push(pub(11, NUM_OUTRO, 'Processo não cadastrado — nova intimação'));
   djen.porOab.push(pub(2, NUM, 'Intime-se o autor para manifestação em 15 dias.')); // já existe
   const r = await verificarTudo(db, { fetchFn: fetchFalso, pausaMs: 0 });
   assert.equal(r.publicacoes, 1);
-  assert.equal(db.prepare('SELECT COUNT(*) n FROM notificacoes').get().n, antes + 1);
+  assert.equal((await db.get('SELECT COUNT(*)::int n FROM notificacoes')).n, antes + 1);
   const lista = await req('/api/publicacoes?lida=0');
   assert.equal(lista.corpo.itens.length, 1);
   assert.equal(lista.corpo.itens[0].processo_id, null);
 });
 
 test('lembretes: CRUD e disparo na antecedência configurada', async () => {
-  const proc = db.prepare('SELECT id FROM processos').get();
+  const proc = (await db.get('SELECT id FROM processos'));
   const daqui2h = new Date(Date.now() + 2 * 3600_000).toISOString();
   const r = await req('/api/lembretes', {
     metodo: 'POST',
@@ -216,7 +227,7 @@ test('falha de uma API é registrada sem interromper a outra', async () => {
   };
   const r = await verificarTudo(db, { fetchFn: quebrado, pausaMs: 0 });
   assert.ok(r.erros.some((e) => /DJEN: .*HTTP 503/.test(e)));
-  assert.match(db.prepare('SELECT erro_verificacao FROM processos WHERE numero = ?').get(NUM).erro_verificacao, /DJEN/);
+  assert.match((await db.get('SELECT erro_verificacao FROM processos WHERE numero = ?', NUM)).erro_verificacao, /DJEN/);
   assert.ok(chamadas.some((c) => c.includes('api_publica_tjsp/_search')));
 });
 
@@ -262,4 +273,37 @@ test('botão de diagnóstico do CNJ', async () => {
   assert.equal(r.status, 200);
   assert.equal(r.corpo.length, 2);
   assert.ok(r.corpo.every((x) => x.ok));
+});
+
+test('agendador (/api/cron): exige a chave e executa lembretes + monitoramento', async () => {
+  const antigo = process.env.CRON_SECRET;
+  try {
+    delete process.env.CRON_SECRET;
+    assert.equal((await req('/api/cron', { semCookie: true })).status, 503);
+    process.env.CRON_SECRET = 'segredo-de-teste-123';
+    assert.equal((await req('/api/cron?chave=errada', { semCookie: true })).status, 401);
+    const r = await req('/api/cron?chave=segredo-de-teste-123', { semCookie: true });
+    assert.equal(r.status, 200);
+    assert.equal(typeof r.corpo.lembretes, 'number');
+    assert.equal(r.corpo.processos, 0, 'processos verificados há pouco não são consultados de novo');
+    await db.run('UPDATE processos SET ultima_verificacao = ?', new Date(Date.now() - 5 * 3600_000).toISOString());
+    const r2 = await req('/api/cron?chave=segredo-de-teste-123', { semCookie: true });
+    assert.equal(r2.corpo.processos, 1, 'processo com verificação vencida é consultado');
+  } finally {
+    if (antigo === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = antigo;
+  }
+});
+
+test('ids inválidos na URL não derrubam a API', async () => {
+  assert.equal((await req('/api/processos/abc')).status, 404);
+  assert.equal((await req('/api/lembretes/xyz', { metodo: 'DELETE' })).status, 404);
+});
+
+test('URL do banco: remove parâmetros extras e mantém o sslmode', async () => {
+  const { limparUrl } = await import('../server/db.js');
+  assert.equal(
+    limparUrl('postgres://u:p@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=base-pooler.x'),
+    'postgres://u:p@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require',
+  );
 });

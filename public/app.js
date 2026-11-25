@@ -389,7 +389,7 @@ async function verificarAgora(botao, depois) {
   toast('Consultando DJEN e DataJud… isso pode levar alguns minutos.');
   try {
     const r = await api('/verificar-agora', { metodo: 'POST' });
-    toast(`${r.processos} processo(s) verificados: ${r.publicacoes} publicação(ões) e ${r.andamentos} andamento(s) novos.${r.erros.length ? ` ${r.erros.length} erro(s).` : ''}`);
+    toast(`${r.processos} processo(s) verificados: ${r.publicacoes} publicação(ões) e ${r.andamentos} andamento(s) novos.${r.erros.length ? ` ${r.erros.length} erro(s).` : ''}${r.pendentes ? ` Faltam ${r.pendentes} — clique de novo para continuar.` : ''}`);
     atualizarContadores();
     depois?.();
   } catch (err) {
@@ -849,6 +849,11 @@ async function telaConfig(c) {
           </div>
           <div class="acoes"><button class="btn primario">Salvar</button><button type="button" class="btn" id="verif-agora">${icone('atualizar')} Verificar agora</button></div>
           <p class="small muted" style="margin-bottom:0">Última verificação: ${cfg.ultima_verificacao_geral ? fmtDataHora(cfg.ultima_verificacao_geral) : 'ainda não realizada'}</p>
+          ${cfg.serverless ? `<p class="small" style="margin:.25rem 0 0">Agendador automático: ${
+            !cfg.agendador_configurado ? '<span class="badge erro">não configurado</span> — defina a variável CRON_SECRET na Vercel (veja o README).'
+            : cfg.ultimo_ciclo && Date.now() - new Date(cfg.ultimo_ciclo).getTime() < 30 * 60000 ? `<span class="badge ok">funcionando</span> <span class="muted">(última execução ${relativo(cfg.ultimo_ciclo)})</span>`
+            : `<span class="badge aviso">sem execuções recentes</span> <span class="muted">${cfg.ultimo_ciclo ? '(última ' + relativo(cfg.ultimo_ciclo) + ')' : ''} — confira o cron-job.org.</span>`
+          }</p>` : ''}
         </form>
         <hr style="border:0;border-top:1px solid var(--border);margin:1rem 0">
         <p class="small" style="margin-bottom:.5rem"><strong>Conexão com o CNJ</strong></p>

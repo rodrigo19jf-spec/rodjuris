@@ -36,9 +36,32 @@ npm start
 
 Abra <http://localhost:3000>. No primeiro acesso o app pede para você **criar uma senha**.
 
-Os dados ficam no arquivo `dados/jurify.db`. Faça backup dessa pasta.
+Os dados ficam na pasta `dados/pg`. Faça backup dessa pasta.
 
-## Como colocar no ar (servidor no Brasil)
+## Como colocar no ar (Vercel, grátis — recomendado)
+
+> **Importante:** o DJEN só aceita acessos de servidores **no Brasil**. Na Vercel, o projeto já vem configurado para rodar em São Paulo (`gru1`, veja `vercel.json`).
+
+1. Na Vercel, importe este repositório (**Add New → Project**, *Framework Preset*: **Other**).
+2. **Banco de dados:** no projeto, aba **Storage** → **Create Database** → **Supabase**.
+   - Região **South America (São Paulo)**.
+   - Conecte ao projeto. A variável `POSTGRES_URL` é criada sozinha.
+3. **Variáveis** (Settings → Environment Variables):
+   - `CRON_SECRET` = uma senha longa e aleatória, só para o agendador;
+   - `TZ_APP` = `America/Sao_Paulo`.
+4. **Redeploy:** aba Deployments → ⋯ → **Redeploy**.
+5. **Agendador** (lembretes e monitoramento): crie uma conta grátis em <https://cron-job.org> e um *cronjob*:
+   - URL: `https://SEU-PROJETO.vercel.app/api/cron?chave=SEU_CRON_SECRET`
+   - Execução: **a cada 5 minutos**.
+
+   A Vercel também chama essa rota 1 vez por dia, como reserva (`crons` em `vercel.json`).
+6. Abra o site, crie sua senha e confira em **Ajustes**:
+   - **Testar conexão com o CNJ**;
+   - o status do **Agendador automático**.
+
+Sem `POSTGRES_URL`/`DATABASE_URL`, o app usa um Postgres embutido (PGlite) gravado em `./dados/pg`. É o modo usado no computador local e em VPS.
+
+## Alternativa: servidor próprio (VPS no Brasil)
 
 > **Importante:** o DJEN só aceita acessos de servidores **no Brasil**. Serviços como Railway, Render e Heroku ficam no exterior e não funcionam para as publicações.
 
@@ -84,9 +107,10 @@ Use o botão **Enviar e-mail de teste** para conferir. Se preferir, configure po
 
 ```
 server/
-  index.js        inicia o servidor e os agendamentos (lembretes a cada minuto, monitoramento a cada N horas)
+  index.js        servidor comum (local/VPS) com relógio interno a cada minuto
+api/index.js      ponto de entrada na Vercel (todas as rotas /api)
   app.js          API REST + autenticação por senha
-  db.js           banco SQLite (node:sqlite, sem dependências nativas)
+  db.js           banco PostgreSQL (Supabase/Neon na Vercel; PGlite embutido no modo local)
   cnj.js          número CNJ: validação, formatação, tribunal
   fontes.js       clientes DJEN (Comunica PJe) e DataJud
   monitor.js      verificação de publicações, andamentos e lembretes

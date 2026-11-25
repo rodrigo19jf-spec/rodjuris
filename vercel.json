@@ -2,6 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["gru1"],
   "functions": {
-    "api/*.js": { "maxDuration": 60 }
-  }
+    "api/index.js": { "maxDuration": 60 }
+  },
+  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index" }],
+  "crons": [{ "path": "/api/cron", "schedule": "17 10 * * *" }]
 }

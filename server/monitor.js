@@ -17,20 +17,19 @@ function resumo(texto, max = 1500) {
   return t.length > max ? `${t.slice(0, max)}…` : t;
 }
 
+export async function intervaloHoras(db) {
+  return Math.max(1, Math.min(Number(await getConfig(db, 'intervalo_horas', '4')) || 4, 24));
+}
+
 /** Grava publicações novas; devolve apenas as que ainda não existiam. */
-function gravarPublicacoes(db, itens, { processoId = null, linhaDeBase = false } = {}) {
-  const porNumero = db.prepare('SELECT id FROM processos WHERE numero = ?');
-  const inserir = db.prepare(`
-    INSERT INTO publicacoes (processo_id, origem, external_id, numero_processo, data_disponibilizacao, tribunal, orgao, tipo, texto, link, lida)
-    VALUES (?, 'djen', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (origem, external_id) DO NOTHING`);
-  const vincular = db.prepare(
-    "UPDATE publicacoes SET processo_id = ? WHERE origem = 'djen' AND external_id = ? AND processo_id IS NULL",
-  );
+async function gravarPublicacoes(db, itens, { processoId = null, linhaDeBase = false } = {}) {
   const novas = [];
   for (const p of itens) {
-    const pid = processoId ?? porNumero.get(p.numero_processo)?.id ?? null;
-    const r = inserir.run(
+    const pid = processoId ?? (await db.get('SELECT id FROM processos WHERE numero = ?', p.numero_processo))?.id ?? null;
+    const r = await db.run(
+      `INSERT INTO publicacoes (processo_id, origem, external_id, numero_processo, data_disponibilizacao, tribunal, orgao, tipo, texto, link, lida)
+       VALUES (?, 'djen', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (origem, external_id) DO NOTHING`,
       pid,
       p.external_id,
       p.numero_processo,
@@ -42,21 +41,33 @@ function gravarPublicacoes(db, itens, { processoId = null, linhaDeBase = false }
       p.link,
       linhaDeBase ? 1 : 0,
     );
-    if (r.changes > 0) novas.push({ ...p, processo_id: pid });
-    else if (pid) vincular.run(pid, p.external_id);
+    if (r.rowCount > 0) novas.push({ ...p, processo_id: pid });
+    else if (pid) {
+      await db.run(
+        "UPDATE publicacoes SET processo_id = ? WHERE origem = 'djen' AND external_id = ? AND processo_id IS NULL",
+        pid,
+        p.external_id,
+      );
+    }
   }
   return novas;
 }
 
-function gravarAndamentos(db, processoId, movimentos, { linhaDeBase = false } = {}) {
-  const inserir = db.prepare(`
-    INSERT INTO andamentos (processo_id, external_key, data, nome, complemento, lida)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT (processo_id, external_key) DO NOTHING`);
+async function gravarAndamentos(db, processoId, movimentos, { linhaDeBase = false } = {}) {
   const novos = [];
   for (const m of movimentos) {
-    const r = inserir.run(processoId, m.external_key, m.data, m.nome, m.complemento, linhaDeBase ? 1 : 0);
-    if (r.changes > 0) novos.push(m);
+    const r = await db.run(
+      `INSERT INTO andamentos (processo_id, external_key, data, nome, complemento, lida)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (processo_id, external_key) DO NOTHING`,
+      processoId,
+      m.external_key,
+      m.data,
+      m.nome,
+      m.complemento,
+      linhaDeBase ? 1 : 0,
+    );
+    if (r.rowCount > 0) novos.push(m);
   }
   return novos;
 }
@@ -70,8 +81,8 @@ function textoEmailPublicacoes(cabecalho, pubs) {
 }
 
 /**
- * Verifica um processo: publicações no DJEN + movimentações no DataJud.
- * @returns {{ publicacoes: number, andamentos: number, erros: string[] }}
+ * Verifica um processo: publicações no DJEN + movimentações no DataJud (em paralelo).
+ * @returns {{ publicacoes: number, andamentos: number, erros: string[], linhaDeBase: boolean }}
  */
 export async function verificarProcesso(db, processo, { fetchFn = fetch, avisar = true } = {}) {
   const linhaDeBase = !processo.ultima_verificacao;
@@ -79,34 +90,42 @@ export async function verificarProcesso(db, processo, { fetchFn = fetch, avisar 
     ? new Date(Date.now() - DIAS_LINHA_DE_BASE * DIA)
     : new Date(new Date(processo.ultima_verificacao).getTime() - DIAS_MARGEM * DIA);
   const erros = [];
+
+  const [djen, datajud] = await Promise.allSettled([
+    buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn }),
+    buscarProcessoDataJud(processo.numero, { fetchFn }),
+  ]);
+
   let novasPubs = [];
+  if (djen.status === 'fulfilled') novasPubs = await gravarPublicacoes(db, djen.value, { processoId: processo.id, linhaDeBase });
+  else erros.push(`DJEN: ${djen.reason?.message || djen.reason}`);
+
   let novosAnd = [];
-
-  try {
-    const itens = await buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn });
-    novasPubs = gravarPublicacoes(db, itens, { processoId: processo.id, linhaDeBase });
-  } catch (err) {
-    erros.push(`DJEN: ${err.message}`);
-  }
-
-  try {
-    const dj = await buscarProcessoDataJud(processo.numero, { fetchFn });
+  if (datajud.status === 'fulfilled') {
+    const dj = datajud.value;
     if (dj) {
-      novosAnd = gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase });
+      novosAnd = await gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase });
       // Preenche campos vazios do cadastro com os dados oficiais.
-      db.prepare(`
-        UPDATE processos SET
-          tribunal = COALESCE(NULLIF(tribunal, ''), ?),
-          classe   = COALESCE(NULLIF(classe, ''), ?),
-          orgao    = COALESCE(NULLIF(orgao, ''), ?),
-          assunto  = COALESCE(NULLIF(assunto, ''), ?)
-        WHERE id = ?`).run(dj.tribunal, dj.classe, dj.orgao, dj.assunto, processo.id);
+      await db.run(
+        `UPDATE processos SET
+           tribunal = COALESCE(NULLIF(tribunal, ''), ?),
+           classe   = COALESCE(NULLIF(classe, ''), ?),
+           orgao    = COALESCE(NULLIF(orgao, ''), ?),
+           assunto  = COALESCE(NULLIF(assunto, ''), ?)
+         WHERE id = ?`,
+        dj.tribunal,
+        dj.classe,
+        dj.orgao,
+        dj.assunto,
+        processo.id,
+      );
     }
-  } catch (err) {
-    erros.push(`DataJud: ${err.message}`);
+  } else {
+    erros.push(`DataJud: ${datajud.reason?.message || datajud.reason}`);
   }
 
-  db.prepare('UPDATE processos SET ultima_verificacao = ?, erro_verificacao = ? WHERE id = ?').run(
+  await db.run(
+    'UPDATE processos SET ultima_verificacao = ?, erro_verificacao = ? WHERE id = ?',
     agoraIso(),
     erros.length ? erros.join(' | ') : null,
     processo.id,
@@ -144,19 +163,22 @@ export async function verificarProcesso(db, processo, { fetchFn = fetch, avisar 
 }
 
 /** Monitora tudo que sai no DJEN em nome do advogado (número da OAB), se configurado. */
-export async function verificarOab(db, { fetchFn = fetch, avisar = true } = {}) {
-  const numero = somenteDigitos(getConfig(db, 'oab_numero', ''));
-  const uf = String(getConfig(db, 'oab_uf', '') || '').toUpperCase();
+export async function verificarOab(db, { fetchFn = fetch, avisar = true, forcar = true } = {}) {
+  const numero = somenteDigitos(await getConfig(db, 'oab_numero', ''));
+  const uf = String((await getConfig(db, 'oab_uf', '')) || '').toUpperCase();
   if (!numero || !uf) return { publicacoes: 0, ignorado: true };
 
   const chaveUlt = `oab_ultima_verificacao_${numero}_${uf}`;
-  const ultima = getConfig(db, chaveUlt);
+  const ultima = await getConfig(db, chaveUlt);
+  if (!forcar && ultima && Date.now() - new Date(ultima).getTime() < (await intervaloHoras(db)) * 3_600_000) {
+    return { publicacoes: 0, ignorado: true };
+  }
   const linhaDeBase = !ultima;
   const desde = linhaDeBase ? new Date(Date.now() - 30 * DIA) : new Date(new Date(ultima).getTime() - DIAS_MARGEM * DIA);
 
   const itens = await buscarPublicacoesDjen({ numeroOab: numero, ufOab: uf }, desde, { fetchFn });
-  const novas = gravarPublicacoes(db, itens, { linhaDeBase });
-  setConfig(db, chaveUlt, agoraIso());
+  const novas = await gravarPublicacoes(db, itens, { linhaDeBase });
+  await setConfig(db, chaveUlt, agoraIso());
 
   if (avisar && !linhaDeBase && novas.length > 0) {
     await notificar(db, {
@@ -175,30 +197,48 @@ export async function verificarOab(db, { fetchFn = fetch, avisar = true } = {}) 
 
 let verificando = false;
 
-/** Verifica todos os processos marcados para monitoramento + a OAB. */
-export async function verificarTudo(db, { fetchFn = fetch, pausaMs = 1500 } = {}) {
+/**
+ * Verifica os processos monitorados + a OAB.
+ * - forcar=true (botão "Verificar agora"): todos os processos.
+ * - forcar=false (agendador): só os que não foram verificados dentro do intervalo configurado.
+ * - prazoMs: para antes de estourar o tempo (na Vercel cada execução tem no máximo 60 s);
+ *   o que sobrar fica para a próxima execução.
+ */
+export async function verificarTudo(db, { fetchFn = fetch, pausaMs = 1500, forcar = true, prazoMs = Infinity } = {}) {
   if (verificando) return { emAndamento: true };
   verificando = true;
-  const resultado = { processos: 0, publicacoes: 0, andamentos: 0, erros: [] };
+  const inicio = Date.now();
+  const resultado = { processos: 0, publicacoes: 0, andamentos: 0, erros: [], pendentes: 0 };
   try {
-    const lista = db
-      .prepare("SELECT * FROM processos WHERE monitorar = 1 AND status != 'encerrado' ORDER BY ultima_verificacao IS NOT NULL, ultima_verificacao")
-      .all();
-    for (const p of lista) {
+    const limite = new Date(Date.now() - (await intervaloHoras(db)) * 3_600_000).toISOString();
+    const lista = await db.all(
+      `SELECT * FROM processos
+       WHERE monitorar = 1 AND status <> 'encerrado'
+         ${forcar ? '' : 'AND (ultima_verificacao IS NULL OR ultima_verificacao < ?)'}
+       ORDER BY ultima_verificacao IS NOT NULL, ultima_verificacao`,
+      ...(forcar ? [] : [limite]),
+    );
+    for (const [i, p] of lista.entries()) {
+      if (Date.now() - inicio > prazoMs) {
+        resultado.pendentes = lista.length - i;
+        break;
+      }
       const r = await verificarProcesso(db, p, { fetchFn });
       resultado.processos++;
       resultado.publicacoes += r.publicacoes;
       resultado.andamentos += r.andamentos;
       if (r.erros.length) resultado.erros.push(`${formatarCnj(p.numero)}: ${r.erros.join(' | ')}`);
-      if (pausaMs) await esperar(pausaMs); // respeita os servidores do CNJ
+      if (pausaMs && i < lista.length - 1) await esperar(pausaMs); // respeita os servidores do CNJ
     }
-    try {
-      const o = await verificarOab(db, { fetchFn });
-      resultado.publicacoes += o.publicacoes || 0;
-    } catch (err) {
-      resultado.erros.push(`OAB: ${err.message}`);
+    if (Date.now() - inicio <= prazoMs) {
+      try {
+        const o = await verificarOab(db, { fetchFn, forcar });
+        resultado.publicacoes += o.publicacoes || 0;
+      } catch (err) {
+        resultado.erros.push(`OAB: ${err.message}`);
+      }
     }
-    setConfig(db, 'ultima_verificacao_geral', agoraIso());
+    if (!resultado.pendentes) await setConfig(db, 'ultima_verificacao_geral', agoraIso());
   } finally {
     verificando = false;
   }
@@ -207,19 +247,19 @@ export async function verificarTudo(db, { fetchFn = fetch, pausaMs = 1500 } = {}
 
 /** Dispara os lembretes cujo horário de aviso já chegou. */
 export async function verificarLembretes(db, agora = new Date()) {
-  const pendentes = db
-    .prepare(`
-      SELECT l.*, p.numero AS processo_numero, p.titulo AS processo_titulo
-      FROM lembretes l LEFT JOIN processos p ON p.id = l.processo_id
-      WHERE l.concluido = 0 AND l.notificado_em IS NULL`)
-    .all();
-  const marcar = db.prepare('UPDATE lembretes SET notificado_em = ? WHERE id = ?');
+  const pendentes = await db.all(
+    `SELECT l.*, p.numero AS processo_numero, p.titulo AS processo_titulo
+     FROM lembretes l LEFT JOIN processos p ON p.id = l.processo_id
+     WHERE l.concluido = 0 AND l.notificado_em IS NULL`,
+  );
   let disparados = 0;
   for (const l of pendentes) {
     const evento = new Date(l.data_hora).getTime();
     const aviso = evento - Number(l.antecedencia_min || 0) * 60_000;
     if (agora.getTime() < aviso) continue;
-    marcar.run(agora.toISOString(), l.id);
+    // Marca antes de avisar: se duas execuções rodarem juntas, só uma avisa.
+    const r = await db.run('UPDATE lembretes SET notificado_em = ? WHERE id = ? AND notificado_em IS NULL', agora.toISOString(), l.id);
+    if (r.rowCount === 0) continue;
     // Lembretes cadastrados já muito no passado não geram aviso.
     if (agora.getTime() - evento > DIA) continue;
     const rotulo = { prazo: 'Prazo', audiencia: 'Audiência', reuniao: 'Reunião', lembrete: 'Lembrete', outro: 'Lembrete' }[l.tipo] || 'Lembrete';
@@ -234,4 +274,15 @@ export async function verificarLembretes(db, agora = new Date()) {
     disparados++;
   }
   return disparados;
+}
+
+/**
+ * Um "ciclo" do agendador: lembretes + monitoramento do que estiver vencido.
+ * Chamado pelo cron-job.org (Vercel) ou pelo relógio interno (servidor comum).
+ */
+export async function executarCiclo(db, { fetchFn = fetch, prazoMs = Infinity, pausaMs = 1500 } = {}) {
+  const lembretes = await verificarLembretes(db);
+  const monitor = await verificarTudo(db, { fetchFn, forcar: false, prazoMs, pausaMs });
+  await setConfig(db, 'ultimo_ciclo', agoraIso());
+  return { lembretes, ...monitor };
 }
