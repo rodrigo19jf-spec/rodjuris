@@ -587,10 +587,12 @@ async function telaPainel(c) {
         <div class="secao-titulo" id="andamentos-novos"><h2>Andamentos novos ${d.andamentosNaoLidos ? `<span class="badge novo">${d.andamentosNaoLidos}</span>` : ''}</h2>
           ${d.andamentosNaoLidos ? '<button class="btn pequeno" id="marcar-andamentos">Marcar como vistos</button>' : ''}</div>
         <div class="card">${d.andamentosNovos?.length ? `<ul class="lista">${d.andamentosNovos.map((a) => `
-          <li class="nao-lida"><a href="#/processos/${a.processo_id}?aba=andamentos" style="color:inherit;display:block">
-            <div class="acoes small"><strong>${fmtDataHora(a.data)}</strong><span class="badge">${{ pje: 'PJe TJMG', eproc: 'eproc TJMG' }[a.fonte] || 'DataJud'}</span></div>
-            <div style="font-weight:600">${esc(a.nome)}</div>
-            <div class="small muted">${esc(a.processo_titulo || formatarCnj(a.processo_numero))}</div></a></li>`).join('')}</ul>
+          <li class="nao-lida"><a class="item-clicavel" href="#/processos/${a.processo_id}?aba=andamentos" title="Abrir o processo na aba Andamentos">
+            <div class="corpo">
+              <div class="acoes small"><strong>${fmtDataHora(a.data)}</strong><span class="badge">${{ pje: 'PJe TJMG', eproc: 'eproc TJMG' }[a.fonte] || 'DataJud'}</span></div>
+              <div style="font-weight:600">${esc(a.nome)}</div>
+              <div class="small muted">${esc(a.processo_titulo || formatarCnj(a.processo_numero))}</div>
+            </div><span class="seta" aria-hidden="true">›</span></a></li>`).join('')}</ul>
             ${d.andamentosNaoLidos > d.andamentosNovos.length ? `<p class="small muted" style="margin:.5rem 0 0">E mais ${d.andamentosNaoLidos - d.andamentosNovos.length} em outros processos.</p>` : ''}`
           : '<p class="vazio">Nenhum andamento novo.</p>'}</div>
         <div class="secao-titulo"><h2>Publicações não lidas</h2><a class="small" href="#/publicacoes">Ver todas</a></div>
@@ -610,9 +612,19 @@ async function telaPainel(c) {
     atualizarContadores();
     telaPainel(c);
   });
+  // Cartão "Andamentos novos": um processo só → abre direto; vários → leva ao quadro e o destaca.
   $('a.stat[href="#andamentos-novos"]')?.addEventListener('click', (e) => {
     e.preventDefault();
+    const processos = [...new Set((d.andamentosNovos || []).map((a) => a.processo_id))];
+    if (processos.length === 1 && d.andamentosNaoLidos === d.andamentosNovos.length) {
+      location.hash = `#/processos/${processos[0]}?aba=andamentos`;
+      return;
+    }
+    const alvo = $('#andamentos-novos + .card');
     $('#andamentos-novos')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    alvo?.classList.remove('destaque');
+    void alvo?.offsetWidth;
+    alvo?.classList.add('destaque');
   });
   $('#verificar-agora').onclick = (e) => verificarAgora(e.currentTarget, () => telaPainel(c));
 }

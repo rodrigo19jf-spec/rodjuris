@@ -315,7 +315,7 @@ export async function verificarProcesso(
       tipo: 'publicacao',
       titulo: `${novasPubs.length} nova(s) publicação(ões) — ${nome}`,
       mensagem: `${formatarCnj(processo.numero)}: ${resumo(novasPubs[0].tipo || novasPubs[0].texto, 140)}`,
-      link: `/#/processos/${processo.id}`,
+      link: `/#/processos/${processo.id}?aba=publicacoes`,
       emailTexto: textoEmailPublicacoes(
         `Novas publicações no DJEN para o processo ${formatarCnj(processo.numero)} (${nome}).`,
         novasPubs,
@@ -330,7 +330,7 @@ export async function verificarProcesso(
       tipo: 'andamento',
       titulo: `${avisosAndamentos.length} novo(s) andamento(s) — ${nome}`,
       mensagem: `${avisosAndamentos[0].nome}`,
-      link: `/#/processos/${processo.id}`,
+      link: `/#/processos/${processo.id}?aba=andamentos`,
       emailTexto: `Novas movimentações no processo ${formatarCnj(processo.numero)} (${nome}):\n\n${linhas}`,
     });
   }
@@ -339,7 +339,7 @@ export async function verificarProcesso(
       tipo: 'andamento',
       titulo: `Processo migrado do PJe para o eproc — ${nome}`,
       mensagem: `${formatarCnj(processo.numero)}: os andamentos passam a vir do DataJud.`,
-      link: `/#/processos/${processo.id}`,
+      link: `/#/processos/${processo.id}?aba=andamentos`,
       emailTexto: `O processo ${formatarCnj(processo.numero)} (${nome}) foi migrado do PJe para o eproc no TJMG (${formatarDataHora(migrouAgora.data)}).\nA partir de agora, os andamentos serão acompanhados pelo DataJud e as publicações continuam pelo DJEN.`,
     });
   }

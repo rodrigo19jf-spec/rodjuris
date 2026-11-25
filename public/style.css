@@ -508,3 +508,12 @@ fieldset.bloco legend { background: var(--surface); border-radius: 6px; padding:
   .stat .rotulo { font-size: .74rem; line-height: 1.2; }
   .saudacao { margin-bottom: .75rem; }
 }
+
+/* itens clicáveis das listas do Painel */
+a.item-clicavel { display: flex; align-items: center; gap: .75rem; color: inherit; margin: -.35rem -.5rem; padding: .35rem .5rem; border-radius: 10px; transition: background .15s; }
+a.item-clicavel:hover { background: var(--surface-2); text-decoration: none; }
+a.item-clicavel .corpo { flex: 1; min-width: 0; }
+a.item-clicavel .seta { font-size: 1.5rem; line-height: 1; color: var(--muted); }
+a.item-clicavel:hover .seta { color: var(--primary); }
+@keyframes destaque { 0%, 100% { box-shadow: var(--shadow); } 30% { box-shadow: 0 0 0 3px var(--accent), var(--shadow-hover); } }
+.card.destaque { animation: destaque 1.4s ease 2; }
