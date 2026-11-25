@@ -151,7 +151,10 @@ async function abrirPostgres(urlOriginal) {
   const { default: postgres } = await import('postgres');
   const sql = postgres(url, {
     prepare: false, // compatível com poolers (Supabase/Neon em modo transação)
-    max: Number(process.env.DB_MAX_CONEXOES || 3),
+    // Uma consulta por vez em cada conexão: o pooler do Supabase (modo transação)
+    // pode travar quando várias consultas são enviadas em sequência na mesma conexão.
+    max_pipeline: 1,
+    max: Number(process.env.DB_MAX_CONEXOES || 5),
     idle_timeout: 20,
     connect_timeout: 15,
     onnotice: () => {},
