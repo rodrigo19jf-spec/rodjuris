@@ -126,5 +126,5 @@ npm test
 ## Privacidade e segurança
 
 - O app é **de uso individual**: protegido por senha, com sessão de 30 dias e limite de tentativas de login.
-- Tudo fica no **seu** servidor (SQLite). Nenhum dado é enviado a terceiros além das consultas ao CNJ (número do processo/OAB) e do envio de e-mail pelo seu SMTP.
+- Tudo fica no **seu** banco de dados (Supabase na Vercel, ou PGlite no servidor próprio). Nenhum dado é enviado a terceiros além das consultas ao CNJ (número do processo/OAB) e do envio de e-mail pelo seu SMTP.
 - Faça backup regular da pasta `dados/`.
