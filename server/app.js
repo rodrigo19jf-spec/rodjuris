@@ -84,6 +84,7 @@ async function emSegundoPlano(promessa) {
  */
 export function criarApp(banco, { fetchFn = fetch } = {}) {
   const obterDb = typeof banco === 'function' ? banco : async () => banco;
+  const obterDbManutencao = obterDb;
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -118,6 +119,54 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (!iguaisSeguro(enviado, segredo)) return erro(res, 401, 'Chave do agendador inválida.');
       const r = await executarCiclo(req.db, { fetchFn, prazoMs: PRAZO_MS });
       res.json(r);
+    }),
+  );
+
+  // ───────────── manutenção do banco (protegida pelo CRON_SECRET) ─────────────
+  // /api/manutencao?chave=...            → mostra sessões e travas no banco
+  // /api/manutencao?chave=...&liberar=1  → encerra sessões presas e configura tempo-limite para o futuro
+  app.get(
+    '/api/manutencao',
+    a(async (req, res) => {
+      const segredo = process.env.CRON_SECRET;
+      if (!segredo) return erro(res, 503, 'Defina a variável CRON_SECRET.');
+      if (!iguaisSeguro(String(req.query.chave || ''), segredo)) return erro(res, 401, 'Chave inválida.');
+      const db = await obterDbManutencao();
+      const sessoes = await db.all(
+        `SELECT pid, usename AS usuario, state AS estado, wait_event_type AS espera_tipo, wait_event AS espera,
+                to_char(now() - xact_start, 'HH24:MI:SS') AS transacao_ha,
+                to_char(now() - query_start, 'HH24:MI:SS') AS consulta_ha,
+                pg_blocking_pids(pid) AS bloqueada_por,
+                left(regexp_replace(query, '\\s+', ' ', 'g'), 160) AS consulta
+         FROM pg_stat_activity
+         WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'
+         ORDER BY xact_start NULLS LAST`,
+      );
+      const resultado = { sessoes };
+      if (req.query.liberar === '1') {
+        const presas = await db.all(
+          `SELECT pid, pg_terminate_backend(pid) AS encerrada
+           FROM pg_stat_activity
+           WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'
+             AND (state IN ('idle in transaction', 'idle in transaction (aborted)')
+                  OR (state = 'active' AND now() - query_start > interval '30 seconds')
+                  OR pid IN (SELECT unnest(pg_blocking_pids(pid)) FROM pg_stat_activity))`,
+        );
+        resultado.encerradas = presas;
+        resultado.ajustes = [];
+        for (const cmd of [
+          "ALTER ROLE CURRENT_USER SET idle_in_transaction_session_timeout = '60s'",
+          "ALTER ROLE CURRENT_USER SET statement_timeout = '45s'",
+        ]) {
+          try {
+            await db.run(cmd);
+            resultado.ajustes.push({ cmd, ok: true });
+          } catch (e) {
+            resultado.ajustes.push({ cmd, ok: false, erro: e.message });
+          }
+        }
+      }
+      res.json(resultado);
     }),
   );
 
