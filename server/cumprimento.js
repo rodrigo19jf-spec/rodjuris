@@ -135,7 +135,7 @@ export async function agendarCobrancas(db) {
 /** Calculadora de prazo para o botão "Calcular" (sugestão — o usuário confere). */
 export function calcularPrazo({ data, quantidade, unidade }) {
   const n = Math.max(1, Math.min(Number(quantidade) || 0, 3650));
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || ''))) throw new Error('Informe a data da intimação.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) || Number.isNaN(new Date(`${data}T12:00:00Z`).getTime())) throw new Error('Informe a data da intimação.');
   if (unidade === 'corridos') {
     const d = new Date(`${data}T12:00:00Z`);
     d.setUTCDate(d.getUTCDate() + n);

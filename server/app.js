@@ -10,6 +10,7 @@ import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.j
 import { textoClasse } from './classes_cnj.js';
 import { SITUACOES_CUMPRIMENTO, calcularPrazo, sincronizarCumprimento } from './cumprimento.js';
 import { dataBrasilia, isoBrasilia } from './prazos.js';
+import { ANTECEDENCIAS_AUDIENCIA, sincronizarAudiencia } from './audiencia.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -73,6 +74,17 @@ function erro(res, status, mensagem) {
 function isoValido(v) {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+/** Data AAAA-MM-DD que existe no calendário (recusa 2026-02-31, 2026-13-01...). */
+function dataValida(v) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return false;
+  const d = new Date(`${v}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+/** Hora HH:MM entre 00:00 e 23:59. */
+function horaValida(v) {
+  const m = String(v).match(/^(\d{2}):(\d{2})$/);
+  return !!m && Number(m[1]) <= 23 && Number(m[2]) <= 59;
 }
 /** Converte o :id da URL em inteiro positivo (ou null). */
 function idNum(v) {
@@ -279,7 +291,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const db = req.db;
       const agora = agoraIso();
       const em7 = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares] = await Promise.all([
+      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares, audiencias] = await Promise.all([
         db.valor("SELECT COUNT(*)::int FROM processos WHERE status = 'ativo'"),
         db.valor("SELECT COUNT(*)::int FROM processos WHERE monitorar = 1 AND status <> 'encerrado'"),
         db.valor('SELECT COUNT(*)::int FROM publicacoes WHERE lida = 0'),
@@ -309,6 +321,14 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
            WHERE liminar = 'deferida' AND cumprimento_situacao IN ('pendente', 'andamento', 'parcial')
            ORDER BY cumprimento_prazo NULLS LAST, id`,
         ),
+        db.all(
+          `SELECT id, numero, titulo, cliente, orgao, audiencia_data, audiencia_hora, audiencia_descricao
+           FROM processos
+           WHERE audiencia_data IS NOT NULL AND audiencia_data >= ? AND audiencia_data <= ?
+           ORDER BY audiencia_data, audiencia_hora NULLS LAST`,
+          dataBrasilia(agora),
+          dataBrasilia(new Date(Date.now() + 30 * 86_400_000).toISOString()),
+        ),
       ]);
       res.json({
         processosAtivos: ativos,
@@ -321,6 +341,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ultimaVerificacao: ultima,
         avisosEproc,
         liminares,
+        audiencias,
       });
     }),
   );
@@ -341,6 +362,22 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.status = STATUS_PROC.includes(body.status) ? body.status : 'ativo';
     }
     if (!parcial || body.monitorar !== undefined) out.monitorar = body.monitorar === false || body.monitorar === 0 ? 0 : 1;
+    if (!parcial || body.audiencia_data !== undefined) {
+      const v = body.audiencia_data ? String(body.audiencia_data).slice(0, 10) : null;
+      if (v && !dataValida(v)) throw new Error('Data da audiência inválida.');
+      out.audiencia_data = v;
+    }
+    if (!parcial || body.audiencia_hora !== undefined) {
+      const v = body.audiencia_hora ? String(body.audiencia_hora).slice(0, 5) : null;
+      if (v && !horaValida(v)) throw new Error('Hora da audiência inválida.');
+      out.audiencia_hora = v;
+    }
+    if (!parcial || body.audiencia_descricao !== undefined) out.audiencia_descricao = texto(body.audiencia_descricao, 500);
+    if (body.audiencia_antecedencia_min !== undefined && body.audiencia_antecedencia_min !== null && body.audiencia_antecedencia_min !== '') {
+      const v = Number(body.audiencia_antecedencia_min);
+      if (!ANTECEDENCIAS_AUDIENCIA.includes(v)) throw new Error('Antecedência do aviso da audiência inválida.');
+      out.audiencia_antecedencia_min = v;
+    }
     if (!parcial || body.sei !== undefined) {
       const sei = texto(body.sei, 60);
       if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
@@ -359,7 +396,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     for (const k of ['cumprimento_prazo', 'cumprimento_data']) {
       if (!parcial || body[k] !== undefined) {
         const v = body[k] ? String(body[k]).slice(0, 10) : null;
-        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new Error('Data inválida no cumprimento da liminar.');
+        if (v && !dataValida(v)) throw new Error('Data inválida no cumprimento da liminar.');
         out[k] = v;
       }
     }
@@ -508,6 +545,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ...cols.map((c) => d[c]),
       );
       await sincronizarCumprimento(req.db, novo.id);
+      await sincronizarAudiencia(req.db, novo.id);
       res.status(201).json(novo);
       // Primeira verificação em segundo plano (cria a linha de base, sem avisos).
       if (novo.monitorar) emSegundoPlano(verificarProcesso(req.db, novo, { fetchFn }));
@@ -541,6 +579,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         );
       }
       await sincronizarCumprimento(req.db, atual.id);
+      await sincronizarAudiencia(req.db, atual.id);
       res.json(await req.db.get('SELECT * FROM processos WHERE id = ?', atual.id));
     }),
   );
@@ -549,9 +588,9 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
   function dadosProvidencia(body, atual = {}) {
     const b = { ...atual, ...body };
     const data = String(b.data || dataBrasilia(agoraIso())).slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new Error('Data inválida.');
+    if (!dataValida(data)) throw new Error('Data inválida.');
     const hora = b.hora ? String(b.hora).slice(0, 5) : null;
-    if (hora && !/^\d{2}:\d{2}$/.test(hora)) throw new Error('Hora inválida.');
+    if (hora && !horaValida(hora)) throw new Error('Hora inválida.');
     const categoria = CATEGORIAS_PROVIDENCIA.includes(b.categoria) ? b.categoria : 'outro';
     const descricao = texto(b.descricao, 2000);
     if (!descricao) throw new Error('Descreva a providência.');

@@ -198,6 +198,20 @@ async function copiarTexto(t) {
   }
 }
 
+const AVISO_AUDIENCIA = [[60, '1 hora antes'], [120, '2 horas antes'], [1440, '1 dia antes'], [2880, '2 dias antes'], [10080, '1 semana antes']];
+
+function textoAudiencia(p) {
+  const hoje = ymdLocal(new Date());
+  const amanha = ymdLocal(new Date(Date.now() + 86_400_000));
+  const dia = p.audiencia_data === hoje ? 'hoje' : p.audiencia_data === amanha ? 'amanhã' : fmtData(p.audiencia_data);
+  return `${dia}${p.audiencia_hora ? ` às ${p.audiencia_hora}` : ''}`;
+}
+function seloAudiencia(p) {
+  if (!p.audiencia_data || p.audiencia_data < ymdLocal(new Date())) return '';
+  const urgente = p.audiencia_data <= ymdLocal(new Date(Date.now() + 86_400_000));
+  return `<span class="badge ${urgente ? 'erro' : 'audiencia'}" title="${esc(p.audiencia_descricao || 'Audiência agendada')}">🗓 Audiência ${textoAudiencia(p)}</span>`;
+}
+
 const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
 function seloCumprimento(p) {
   if (p.liminar !== 'deferida' || !p.cumprimento_situacao) return '';
@@ -530,6 +544,13 @@ async function telaPainel(c) {
         ${a.processo_id ? `<a href="#/processos/${a.processo_id}">${esc(a.processo_titulo || formatarCnj(a.numero_processo))}</a>` : `<span class="mono">${esc(formatarCnj(a.numero_processo))}</span> <button class="btn pequeno cadastrar-de-pub" data-numero="${esc(a.numero_processo)}">Cadastrar</button>`}
         ${a.disponibilizado_em ? `<span class="muted"> · ${fmtDataHora(a.disponibilizado_em)}</span>` : ''}</li>`).join('')}</ul>
     </section>` : ''}
+    ${d.audiencias?.length ? `<section class="card" style="margin-top:1rem;border-left:4px solid var(--t-audiencia)">
+      <div class="secao-titulo" style="margin-top:0"><h2>🗓 Próximas audiências (${d.audiencias.length})</h2><a class="small" href="#/agenda">Ver na agenda</a></div>
+      <ul class="lista">${d.audiencias.map((a) => `<li class="small">
+        <div class="acoes"><strong>${textoAudiencia(a)}</strong> · <a href="#/processos/${a.id}" style="font-weight:600">${esc(a.titulo || a.cliente || formatarCnj(a.numero))}</a></div>
+        <div class="muted">${[a.audiencia_descricao, a.orgao].filter(Boolean).map(esc).join(' · ') || esc(formatarCnj(a.numero))}</div>
+      </li>`).join('')}</ul>
+    </section>` : ''}
     ${d.liminares?.length ? `<section class="card" style="margin-top:1rem;border-left:4px solid var(--warn)">
       <div class="secao-titulo" style="margin-top:0"><h2>📌 Liminares pendentes de cumprimento (${d.liminares.length})</h2>
         <a class="small" href="#/processos?cumprimento=pendente">Ver na lista</a></div>
@@ -622,6 +643,7 @@ async function telaProcessos(c) {
         </div>
         <div class="acoes small" style="margin-top:.5rem">
           <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
+          ${seloAudiencia(p)}
           ${seloLiminar(p.liminar)}
           ${seloCumprimento(p)}
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
@@ -677,6 +699,19 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
         <div class="campo"><label for="f-classe">Classe</label><input id="f-classe" value="${esc(p.classe || '')}"></div>
         <div class="campo"><label for="f-status">Situação</label><select id="f-status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${(p.status || 'ativo') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
+      <fieldset class="bloco">
+        <legend>Audiência agendada</legend>
+        <div class="campos-2">
+          <div class="campo"><label for="f-aud-data">Data</label><input type="date" id="f-aud-data" value="${esc(p.audiencia_data || '')}"></div>
+          <div class="campo"><label for="f-aud-hora">Hora</label><input type="time" id="f-aud-hora" value="${esc(p.audiencia_hora || '')}"></div>
+        </div>
+        <div class="campos-2">
+          <div class="campo"><label for="f-aud-desc">Tipo / local / link</label><input id="f-aud-desc" maxlength="500" placeholder="Ex.: Conciliação – sala 3 (ou link da videoconferência)" value="${esc(p.audiencia_descricao || '')}"></div>
+          <div class="campo"><label for="f-aud-aviso">Avisar</label><select id="f-aud-aviso">${AVISO_AUDIENCIA.map(([v, t]) => `<option value="${v}" ${Number(p.audiencia_antecedencia_min || 1440) === v ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+        </div>
+        <div class="acoes"><button type="button" class="btn pequeno" id="limpar-aud">Limpar audiência</button>
+          <span class="ajuda">Com a data preenchida, o app cria o aviso automaticamente (no app, por e-mail e no celular).</span></div>
+      </fieldset>
       <div class="campo"><label for="f-liminar">Liminar</label>
         <select id="f-liminar">
           <option value="">— Não informado —</option>
@@ -714,6 +749,11 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
       <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
     </form>`, {
     aoAbrir: (m, fechar) => {
+      $('#limpar-aud', m).onclick = () => {
+        $('#f-aud-data', m).value = '';
+        $('#f-aud-hora', m).value = '';
+        $('#f-aud-desc', m).value = '';
+      };
       $('#f-liminar', m).onchange = (e) => ($('#bloco-cumprimento', m).hidden = e.target.value !== 'deferida');
       if (focoCumprimento && !$('#bloco-cumprimento', m).hidden) {
         setTimeout(() => {
@@ -764,6 +804,10 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
           numero: $('#f-numero', m).value,
           titulo: $('#f-titulo', m).value,
           sei: $('#f-sei', m).value,
+          audiencia_data: $('#f-aud-data', m).value || null,
+          audiencia_hora: $('#f-aud-hora', m).value || null,
+          audiencia_descricao: $('#f-aud-desc', m).value,
+          audiencia_antecedencia_min: $('#f-aud-aviso', m).value,
           cliente: $('#f-cliente', m).value,
           parte_contraria: $('#f-contraria', m).value,
           tribunal: $('#f-tribunal', m).value,
@@ -816,6 +860,7 @@ async function telaProcesso(c, id, abaInicial) {
         <div><div class="mono">${esc(formatarCnj(p.numero))}</div>
           <div class="acoes small" style="margin-top:.35rem">
             <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
+            ${seloAudiencia(p)}
             ${seloLiminar(p.liminar)}
             ${seloCumprimento(p)}
             ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
@@ -826,6 +871,7 @@ async function telaProcesso(c, id, abaInicial) {
         <div class="acoes"><button class="btn pequeno" id="editar">Editar</button><button class="btn pequeno perigo" id="excluir">Excluir</button></div>
       </div>
       <dl class="dados">
+        ${p.audiencia_data ? `<div><dt>Audiência</dt><dd>${textoAudiencia(p)}${p.audiencia_data < ymdLocal(new Date()) ? ' <span class="badge">realizada?</span>' : ''}${p.audiencia_descricao ? `<div class="small muted">${esc(p.audiencia_descricao)}</div>` : ''}</dd></div>` : ''}
         ${p.sei ? `<div><dt>Nº SEI</dt><dd><span class="mono">${esc(p.sei)}</span> <button class="btn pequeno" id="copiar-sei" title="Copiar para colar na pesquisa do SEI">Copiar</button></dd></div>` : ''}
         ${[['Cliente', p.cliente], ['Parte contrária', p.parte_contraria], ['Tribunal', p.tribunal], ['Vara / órgão', p.orgao], ['Classe', p.classe], ['Assunto', p.assunto]]
           .filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}

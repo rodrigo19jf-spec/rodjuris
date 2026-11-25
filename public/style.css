@@ -160,6 +160,7 @@ h3 { font-size: 1rem; }
 .badge.ok { background: var(--ok-bg); color: var(--ok); }
 .badge.aviso { background: var(--warn-bg); color: var(--warn); }
 .badge.erro { background: var(--danger-bg); color: var(--danger); }
+.badge.audiencia { background: var(--info-bg); color: var(--t-audiencia); }
 .tipo { border-left: 4px solid var(--t-outro); }
 .tipo-prazo { border-left-color: var(--t-prazo); }
 .tipo-audiencia { border-left-color: var(--t-audiencia); }

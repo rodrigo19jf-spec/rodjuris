@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '7');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '8');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -917,6 +917,71 @@ test('providências: tipo, hora, lembrete opcional, edição e exclusão', async
     assert.equal((await req(`/api/processos/${proc.id}/providencias`, { metodo: 'POST', corpo: { data: '2026-11-25', hora: '25h', descricao: 'x' } })).status, 400);
     assert.equal((await req(`/api/providencias/${aud.corpo.id}`, { metodo: 'DELETE' })).status, 200);
     assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `providencia|${aud.corpo.id}`), undefined, 'excluir remove o lembrete');
+    await req(`/api/processos/${proc.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+});
+
+test('audiência agendada no processo: lembrete automático, reagendamento, painel e remoção', async () => {
+  const { dataBrasilia } = await import('../server/prazos.js');
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const NUM_A = gerarCnj(9393939, '2026', '8', '13', '0024');
+    const daqui10 = dataBrasilia(new Date(Date.now() + 10 * 86_400_000).toISOString());
+    const r = await req('/api/processos', {
+      metodo: 'POST',
+      corpo: { numero: NUM_A, titulo: 'Caso audiência', orgao: '2ª Vara da Fazenda', audiencia_data: daqui10, audiencia_hora: '14:00', audiencia_descricao: 'Conciliação – sala 3', monitorar: false },
+    });
+    assert.equal(r.status, 201);
+    const id = r.corpo.id;
+    let l = await db.get('SELECT * FROM lembretes WHERE origem = ?', `audiencia|${id}`);
+    assert.equal(l.tipo, 'audiencia');
+    assert.equal(l.data_hora, new Date(`${daqui10}T14:00:00-03:00`).toISOString());
+    assert.equal(l.antecedencia_min, 1440, 'padrão: avisa 1 dia antes');
+    assert.match(l.descricao, /Conciliação – sala 3/);
+
+    const painel = await req('/api/painel');
+    assert.ok(painel.corpo.audiencias.some((a) => a.id === id));
+
+    // Reagendar: atualiza o mesmo lembrete e volta a avisar; muda a antecedência.
+    await db.run('UPDATE lembretes SET notificado_em = ? WHERE id = ?', new Date().toISOString(), l.id);
+    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_hora: '15:30', audiencia_antecedencia_min: 120 } });
+    const l2 = await db.get('SELECT * FROM lembretes WHERE origem = ?', `audiencia|${id}`);
+    assert.equal(l2.id, l.id);
+    assert.equal(l2.data_hora, new Date(`${daqui10}T15:30:00-03:00`).toISOString());
+    assert.equal(l2.antecedencia_min, 120);
+    assert.equal(l2.notificado_em, null);
+
+    // Editar outro campo não mexe na audiência.
+    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { titulo: 'Caso audiência (editado)' } });
+    assert.equal((await db.get('SELECT audiencia_data FROM processos WHERE id = ?', id)).audiencia_data, daqui10);
+
+    assert.equal((await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_hora: '25:99' } })).status, 400);
+    assert.equal((await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_antecedencia_min: 7 } })).status, 400);
+
+    // Apagar a data remove o aviso.
+    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { audiencia_data: null, audiencia_hora: null } });
+    assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `audiencia|${id}`), undefined);
+    await req(`/api/processos/${id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+});
+
+test('datas e horas impossíveis são recusadas com mensagem (não derrubam o servidor)', async () => {
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const proc = (await req('/api/processos', { metodo: 'POST', corpo: { numero: gerarCnj(9494949, '2026', '8', '13', '0024'), monitorar: false } })).corpo;
+    for (const corpo of [{ audiencia_data: '2026-02-31' }, { audiencia_hora: '24:00' }, { cumprimento_prazo: '2026-13-01' }]) {
+      const r = await req(`/api/processos/${proc.id}`, { metodo: 'PUT', corpo });
+      assert.equal(r.status, 400, JSON.stringify(corpo));
+    }
+    assert.equal((await req(`/api/processos/${proc.id}/providencias`, { metodo: 'POST', corpo: { data: '2026-04-31', descricao: 'x' } })).status, 400);
+    assert.equal((await req(`/api/processos/${proc.id}/providencias`, { metodo: 'POST', corpo: { data: '2026-04-30', hora: '12:61', descricao: 'x' } })).status, 400);
+    assert.equal((await req('/api/prazos/calcular', { metodo: 'POST', corpo: { data: '2026-99-99', quantidade: 5 } })).status, 400);
     await req(`/api/processos/${proc.id}`, { metodo: 'DELETE' });
   } finally {
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;

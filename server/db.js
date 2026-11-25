@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS processos (
   status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','suspenso','encerrado')),
   observacoes TEXT,
   sei TEXT,                                -- número do processo no SEI (ex.: SEI MG)
+  audiencia_data TEXT,                     -- AAAA-MM-DD (próxima audiência)
+  audiencia_hora TEXT,                     -- HH:MM
+  audiencia_descricao TEXT,                -- tipo/local/link
+  audiencia_antecedencia_min INTEGER NOT NULL DEFAULT 1440,
   liminar TEXT CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida')),
   cumprimento_situacao TEXT CHECK (cumprimento_situacao IN ('pendente','andamento','parcial','cumprida')),
   cumprimento_prazo TEXT,                  -- AAAA-MM-DD (data-limite fixada na decisão)
@@ -185,6 +189,10 @@ const MIGRACOES = [
    ALTER TABLE providencias ADD COLUMN IF NOT EXISTS hora TEXT;
    ALTER TABLE providencias ADD COLUMN IF NOT EXISTS categoria TEXT;
    UPDATE providencias SET categoria = 'cumprimento' WHERE categoria IS NULL;`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_data TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_hora TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_descricao TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_antecedencia_min INTEGER NOT NULL DEFAULT 1440;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */
