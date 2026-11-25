@@ -307,3 +307,10 @@ test('URL do banco: remove parâmetros extras e mantém o sslmode', async () => 
     'postgres://u:p@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?sslmode=require',
   );
 });
+
+test('encontra a URL do banco mesmo com prefixo da Vercel', async () => {
+  const { urlDoBanco } = await import('../server/db.js');
+  assert.equal(urlDoBanco({ STORAGE_POSTGRES_URL: 'postgres://x' }), 'postgres://x');
+  assert.equal(urlDoBanco({ POSTGRES_URL: 'postgres://a', STORAGE_POSTGRES_URL: 'postgres://b' }), 'postgres://a');
+  assert.equal(urlDoBanco({ STORAGE_POSTGRES_URL_NON_POOLING: 'postgres://c' }), '');
+});

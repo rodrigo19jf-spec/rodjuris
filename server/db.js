@@ -132,8 +132,11 @@ function criarApi(executar, fechar) {
   return api;
 }
 
-export function urlDoBanco() {
-  return process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+export function urlDoBanco(env = process.env) {
+  if (env.DATABASE_URL || env.POSTGRES_URL) return env.DATABASE_URL || env.POSTGRES_URL;
+  // Integrações da Vercel podem usar um prefixo (ex.: STORAGE_POSTGRES_URL).
+  const chave = Object.keys(env).find((k) => /(^|_)(POSTGRES_URL|DATABASE_URL)$/.test(k) && env[k]);
+  return chave ? env[chave] : '';
 }
 
 /** Remove parâmetros extras da URL (ex.: "supa=..." da integração Supabase), mantendo só o sslmode. */
