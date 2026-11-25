@@ -360,7 +360,13 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         if (!dj) return erro(res, 404, 'Processo não encontrado no DataJud (pode estar em segredo de justiça ou ainda não indexado).');
         res.json({ ...dj, movimentos: dj.movimentos.slice(0, 5) });
       } catch (err) {
-        erro(res, 502, err.message);
+        erro(
+          res,
+          502,
+          err.temporario
+            ? 'O DataJud (CNJ) está instável no momento. Pode salvar o processo assim mesmo: tribunal, vara, classe e andamentos serão preenchidos automaticamente quando ele voltar.'
+            : err.message,
+        );
       }
     }),
   );

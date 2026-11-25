@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS processos (
   monitorar INTEGER NOT NULL DEFAULT 1,
   ultima_verificacao TEXT,
   erro_verificacao TEXT,
+  datajud_em TEXT,                         -- última consulta bem-sucedida ao DataJud
+  datajud_pendente INTEGER NOT NULL DEFAULT 0, -- 1 = DataJud falhou, tentar de novo
+  datajud_tentativa TEXT,                  -- última tentativa no DataJud
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
   atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
@@ -104,6 +107,32 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 `;
 
+// Migrações para bancos criados por versões anteriores (cada item roda uma única vez).
+const MIGRACOES = [
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS datajud_em TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS datajud_pendente INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS datajud_tentativa TEXT;
+   UPDATE processos SET datajud_em = ultima_verificacao
+     WHERE datajud_em IS NULL AND EXISTS (SELECT 1 FROM andamentos an WHERE an.processo_id = processos.id);`,
+];
+
+/** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */
+async function prepararEsquema(exec, consultar, tabelasExistem) {
+  if (!tabelasExistem) {
+    await exec(SCHEMA);
+    await exec(`INSERT INTO config (chave, valor) VALUES ('schema_versao', '${MIGRACOES.length}') ON CONFLICT (chave) DO NOTHING`);
+    return;
+  }
+  const linhas = await consultar("SELECT valor FROM config WHERE chave = 'schema_versao'");
+  const versao = Number(linhas[0]?.valor || 0);
+  for (let i = versao; i < MIGRACOES.length; i++) {
+    await exec(MIGRACOES[i]);
+    await exec(
+      `INSERT INTO config (chave, valor) VALUES ('schema_versao', '${i + 1}') ON CONFLICT (chave) DO UPDATE SET valor = excluded.valor`,
+    );
+  }
+}
+
 /** Troca os marcadores "?" por $1, $2... (o SQL do app não usa "?" dentro de textos). */
 function converter(sql) {
   let i = 0;
@@ -162,7 +191,7 @@ async function abrirPostgres(urlOriginal) {
   });
   // Cria as tabelas só na primeira vez (deixa as partidas a frio da Vercel mais rápidas).
   const [{ existe }] = await sql.unsafe("SELECT to_regclass('public.push_subscriptions') IS NOT NULL AS existe");
-  if (!existe) await sql.unsafe(SCHEMA);
+  await prepararEsquema((t) => sql.unsafe(t), async (t) => [...(await sql.unsafe(t))], existe);
   return criarApi(
     async (texto, params) => {
       const r = await sql.unsafe(texto, params);
@@ -176,7 +205,8 @@ async function abrirPglite(pasta) {
   const { PGlite } = await import('@electric-sql/pglite');
   if (pasta && pasta !== ':memory:') fs.mkdirSync(pasta, { recursive: true });
   const pg = pasta && pasta !== ':memory:' ? new PGlite(pasta) : new PGlite();
-  await pg.exec(SCHEMA);
+  const { rows } = await pg.query("SELECT to_regclass('public.push_subscriptions') IS NOT NULL AS existe");
+  await prepararEsquema((t) => pg.exec(t), async (t) => (await pg.query(t)).rows, rows[0].existe);
   // O PGlite atende uma consulta por vez: enfileira para evitar disputas.
   let fila = Promise.resolve();
   return criarApi(

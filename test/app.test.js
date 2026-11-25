@@ -251,7 +251,7 @@ test('DataJud sobrecarregado (HTTP 429): tenta de novo e, se persistir, mostra m
     falhas = 99;
     r = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify({ numero: NUM }) });
     assert.equal(r.status, 502);
-    assert.match((await r.json()).erro, /DataJud \(CNJ\) está sobrecarregado/);
+    assert.match((await r.json()).erro, /DataJud \(CNJ\) está instável.*salvar o processo assim mesmo/);
   } finally {
     s2.close();
   }
@@ -313,4 +313,78 @@ test('encontra a URL do banco mesmo com prefixo da Vercel', async () => {
   assert.equal(urlDoBanco({ STORAGE_POSTGRES_URL: 'postgres://x' }), 'postgres://x');
   assert.equal(urlDoBanco({ POSTGRES_URL: 'postgres://a', STORAGE_POSTGRES_URL: 'postgres://b' }), 'postgres://a');
   assert.equal(urlDoBanco({ STORAGE_POSTGRES_URL_NON_POOLING: 'postgres://c' }), '');
+});
+
+test('DataJud instável: marca pendente sem erro, pausa e depois recupera sem avalanche de avisos', async () => {
+  const { retentarDataJud, verificarProcesso } = await import('../server/monitor.js');
+  const NUM3 = gerarCnj(3333333);
+  djen.porProcesso[NUM3] = [];
+  datajud[NUM3] = {
+    tribunal: 'TJSP',
+    classe: { nome: 'Execução Fiscal' },
+    orgaoJulgador: { nome: 'Vara de Execuções Fiscais' },
+    movimentos: [
+      { codigo: 1, nome: 'Distribuição', dataHora: '2024-01-01T10:00:00.000Z' },
+      { codigo: 2, nome: 'Citação', dataHora: '2024-02-01T10:00:00.000Z' },
+    ],
+  };
+  await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+  const proc = await db.get('INSERT INTO processos (numero, titulo) VALUES (?, ?) RETURNING *', NUM3, 'Execução');
+  const sobrecarregado = async (url, init) =>
+    String(url).includes('datajud') ? { ok: false, status: 429, text: async () => 'es_rejected_execution_exception' } : fetchFalso(url, init);
+
+  const r1 = await verificarProcesso(db, proc, { fetchFn: sobrecarregado });
+  assert.deepEqual(r1.erros, [], 'instabilidade do CNJ não vira erro');
+  let p = await db.get('SELECT * FROM processos WHERE id = ?', proc.id);
+  assert.equal(p.datajud_pendente, 1);
+  assert.equal(p.erro_verificacao, null);
+  assert.ok(await db.get("SELECT 1 FROM config WHERE chave = 'datajud_pausa_ate' AND valor > ?", new Date().toISOString()), 'pausa ativada');
+
+  // Durante a pausa, a nova tentativa não consulta o CNJ.
+  assert.equal((await retentarDataJud(db, { fetchFn: fetchFalso })).processos, 0);
+
+  // Pausa vencida e tentativa antiga: o DataJud volta e os andamentos entram como linha de base (sem avisos).
+  await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+  await db.run('UPDATE processos SET datajud_tentativa = ? WHERE id = ?', new Date(Date.now() - 3600_000).toISOString(), proc.id);
+  const avisosAntes = await db.valor('SELECT COUNT(*)::int FROM notificacoes');
+  const r2 = await retentarDataJud(db, { fetchFn: fetchFalso });
+  assert.equal(r2.processos, 1);
+  p = await db.get('SELECT * FROM processos WHERE id = ?', proc.id);
+  assert.equal(p.datajud_pendente, 0);
+  assert.ok(p.datajud_em);
+  assert.equal(p.classe, 'Execução Fiscal', 'cadastro preenchido automaticamente');
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM andamentos WHERE processo_id = ? AND lida = 1', proc.id), 2);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisosAntes, 'histórico antigo não gera aviso');
+
+  // Daqui em diante, andamento novo gera aviso.
+  datajud[NUM3].movimentos.push({ codigo: 3, nome: 'Sentença', dataHora: '2026-11-20T10:00:00.000Z' });
+  const r3 = await verificarProcesso(db, p, { fetchFn: fetchFalso, djen: false });
+  assert.equal(r3.andamentos, 1);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisosAntes + 1);
+  await db.run('DELETE FROM processos WHERE id = ?', proc.id);
+});
+
+test('atualiza banco criado pela versão anterior (migração)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { PGlite } = await import('@electric-sql/pglite');
+  const pasta = fs.mkdtempSync(path.join(os.tmpdir(), 'rodjuris-mig-'));
+  const antigo = new PGlite(pasta);
+  await antigo.exec(`
+    CREATE TABLE processos (id SERIAL PRIMARY KEY, numero TEXT NOT NULL UNIQUE, ultima_verificacao TEXT, monitorar INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE andamentos (id SERIAL PRIMARY KEY, processo_id INTEGER, external_key TEXT);
+    CREATE TABLE config (chave TEXT PRIMARY KEY, valor TEXT);
+    CREATE TABLE push_subscriptions (endpoint TEXT PRIMARY KEY, dados TEXT NOT NULL);
+    INSERT INTO processos (numero, ultima_verificacao) VALUES ('1', '2026-11-01T00:00:00.000Z'), ('2', NULL);
+    INSERT INTO andamentos (processo_id, external_key) VALUES (1, 'x');`);
+  await antigo.close();
+  const novo = await openDb(pasta);
+  const linhas = await novo.all('SELECT numero, datajud_em, datajud_pendente FROM processos ORDER BY numero');
+  assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
+  assert.equal(linhas[1].datajud_em, null);
+  assert.equal(linhas[1].datajud_pendente, 0);
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '1');
+  await novo.close();
+  fs.rmSync(pasta, { recursive: true, force: true });
 });

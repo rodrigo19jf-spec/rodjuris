@@ -452,6 +452,7 @@ async function telaProcessos(c) {
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
+          ${p.monitorar && p.datajud_pendente ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
         </div>
         ${p.cliente && p.titulo ? `<div class="small muted" style="margin-top:.35rem">Cliente: ${esc(p.cliente)}</div>` : ''}
         ${p.proximo_lembrete ? `<div class="small" style="margin-top:.25rem">Próximo compromisso: ${fmtDataHora(p.proximo_lembrete)}</div>` : ''}
@@ -577,6 +578,7 @@ async function telaProcesso(c, id, abaInicial) {
       <label class="check small" style="margin-top:.75rem"><input type="checkbox" id="monitorar" ${p.monitorar ? 'checked' : ''}> Monitorar e me avisar sobre novas publicações e andamentos</label>
       <p class="small muted" style="margin:.5rem 0 0">Última verificação: ${p.ultima_verificacao ? fmtDataHora(p.ultima_verificacao) : 'pendente'}</p>
       ${p.erro_verificacao ? `<div class="alerta-caixa erro small" style="margin-top:.5rem">${esc(p.erro_verificacao)}</div>` : ''}
+      ${p.monitorar && p.datajud_pendente ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
     </div>
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
@@ -599,7 +601,7 @@ async function telaProcesso(c, id, abaInicial) {
             <li class="${a.lida ? '' : 'nao-lida'}"><div class="small muted">${fmtDataHora(a.data)}</div>
             <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'}</div>
             ${a.complemento ? `<div class="small muted">${esc(a.complemento)}</div>` : ''}</li>`).join('')}</ul></div>`
-        : '<div class="card vazio">Nenhum andamento encontrado no DataJud.</div>';
+        : `<div class="card vazio">${p.datajud_em ? 'Nenhum andamento encontrado no DataJud.' : 'Ainda não foi possível consultar o DataJud (CNJ). Os andamentos aparecerão aqui assim que ele responder.'}</div>`;
     } else {
       alvo.innerHTML = `
         <div class="acoes" style="margin-bottom:.75rem"><button class="btn primario" id="novo-lemb-proc">${icone('mais')} Novo prazo / lembrete</button></div>

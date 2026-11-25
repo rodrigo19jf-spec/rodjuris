@@ -80,86 +80,144 @@ function textoEmailPublicacoes(cabecalho, pubs) {
   return `${cabecalho}\n\n${blocos.join('\n\n────────────────────────\n\n')}`;
 }
 
+// Quando o DataJud (CNJ) está sobrecarregado, pausa as consultas por um tempo para não piorar a fila.
+const PAUSA_DATAJUD_MIN = 10;
+// Processos cujo DataJud falhou são tentados de novo neste intervalo.
+const RETENTATIVA_DATAJUD_MIN = 20;
+
+async function dataJudPausado(db) {
+  const ate = await getConfig(db, 'datajud_pausa_ate');
+  return !!ate && ate > agoraIso();
+}
+async function pausarDataJud(db) {
+  await setConfig(db, 'datajud_pausa_ate', new Date(Date.now() + PAUSA_DATAJUD_MIN * 60_000).toISOString());
+}
+
 /**
  * Verifica um processo: publicações no DJEN + movimentações no DataJud (em paralelo).
- * @returns {{ publicacoes: number, andamentos: number, erros: string[], linhaDeBase: boolean }}
+ * Opções djen/datajud permitem consultar só uma das fontes (ex.: nova tentativa só do DataJud).
  */
-export async function verificarProcesso(db, processo, { fetchFn = fetch, avisar = true } = {}) {
-  const linhaDeBase = !processo.ultima_verificacao;
+export async function verificarProcesso(
+  db,
+  processo,
+  { fetchFn = fetch, avisar = true, djen: usarDjen = true, datajud: usarDatajud = true } = {},
+) {
+  const linhaDeBase = !processo.ultima_verificacao; // publicações
+  const linhaDeBaseDJ = !processo.datajud_em; // andamentos: só a 1ª resposta bem-sucedida do DataJud
   const desde = linhaDeBase
     ? new Date(Date.now() - DIAS_LINHA_DE_BASE * DIA)
     : new Date(new Date(processo.ultima_verificacao).getTime() - DIAS_MARGEM * DIA);
   const erros = [];
+  const pausado = usarDatajud && (await dataJudPausado(db));
 
   const [djen, datajud] = await Promise.allSettled([
-    buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn }),
-    buscarProcessoDataJud(processo.numero, { fetchFn }),
+    usarDjen ? buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn }) : Promise.resolve(null),
+    usarDatajud && !pausado ? buscarProcessoDataJud(processo.numero, { fetchFn }) : Promise.resolve(null),
   ]);
 
   let novasPubs = [];
-  if (djen.status === 'fulfilled') novasPubs = await gravarPublicacoes(db, djen.value, { processoId: processo.id, linhaDeBase });
-  else erros.push(`DJEN: ${djen.reason?.message || djen.reason}`);
+  if (usarDjen) {
+    if (djen.status === 'fulfilled') novasPubs = await gravarPublicacoes(db, djen.value, { processoId: processo.id, linhaDeBase });
+    else erros.push(`DJEN: ${djen.reason?.message || djen.reason}`);
+  }
 
   let novosAnd = [];
-  if (datajud.status === 'fulfilled') {
-    const dj = datajud.value;
-    if (dj) {
-      novosAnd = await gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase });
-      // Preenche campos vazios do cadastro com os dados oficiais.
-      await db.run(
-        `UPDATE processos SET
-           tribunal = COALESCE(NULLIF(tribunal, ''), ?),
-           classe   = COALESCE(NULLIF(classe, ''), ?),
-           orgao    = COALESCE(NULLIF(orgao, ''), ?),
-           assunto  = COALESCE(NULLIF(assunto, ''), ?)
-         WHERE id = ?`,
-        dj.tribunal,
-        dj.classe,
-        dj.orgao,
-        dj.assunto,
-        processo.id,
-      );
+  let datajudPendente = Number(processo.datajud_pendente || 0);
+  if (usarDatajud) {
+    const agora = agoraIso();
+    if (pausado) {
+      datajudPendente = 1;
+    } else if (datajud.status === 'fulfilled') {
+      datajudPendente = 0;
+      const dj = datajud.value;
+      if (dj) {
+        novosAnd = await gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase: linhaDeBaseDJ });
+        // Preenche campos vazios do cadastro com os dados oficiais.
+        await db.run(
+          `UPDATE processos SET
+             tribunal = COALESCE(NULLIF(tribunal, ''), ?),
+             classe   = COALESCE(NULLIF(classe, ''), ?),
+             orgao    = COALESCE(NULLIF(orgao, ''), ?),
+             assunto  = COALESCE(NULLIF(assunto, ''), ?)
+           WHERE id = ?`,
+          dj.tribunal,
+          dj.classe,
+          dj.orgao,
+          dj.assunto,
+          processo.id,
+        );
+      }
+      await db.run('UPDATE processos SET datajud_em = ? WHERE id = ?', agora, processo.id);
+    } else {
+      const e = datajud.reason;
+      if (e?.temporario) {
+        datajudPendente = 1; // instabilidade do CNJ: tenta de novo em breve, sem tratar como erro
+        if (e.status === 429 || !e.status) await pausarDataJud(db);
+      } else {
+        erros.push(`DataJud: ${e?.message || e}`);
+      }
     }
-  } else {
-    erros.push(`DataJud: ${datajud.reason?.message || datajud.reason}`);
+    await db.run('UPDATE processos SET datajud_pendente = ?, datajud_tentativa = ? WHERE id = ?', datajudPendente, agora, processo.id);
   }
 
-  await db.run(
-    'UPDATE processos SET ultima_verificacao = ?, erro_verificacao = ? WHERE id = ?',
-    agoraIso(),
-    erros.length ? erros.join(' | ') : null,
-    processo.id,
+  if (usarDjen) {
+    await db.run(
+      'UPDATE processos SET ultima_verificacao = ?, erro_verificacao = ? WHERE id = ?',
+      agoraIso(),
+      erros.length ? erros.join(' | ') : null,
+      processo.id,
+    );
+  }
+
+  const nome = processo.titulo || processo.cliente || formatarCnj(processo.numero);
+  if (avisar && !linhaDeBase && novasPubs.length > 0) {
+    await notificar(db, {
+      tipo: 'publicacao',
+      titulo: `${novasPubs.length} nova(s) publicação(ões) — ${nome}`,
+      mensagem: `${formatarCnj(processo.numero)}: ${resumo(novasPubs[0].tipo || novasPubs[0].texto, 140)}`,
+      link: `/#/processos/${processo.id}`,
+      emailTexto: textoEmailPublicacoes(
+        `Novas publicações no DJEN para o processo ${formatarCnj(processo.numero)} (${nome}).`,
+        novasPubs,
+      ),
+    });
+  }
+  if (avisar && !linhaDeBaseDJ && novosAnd.length > 0) {
+    const linhas = novosAnd
+      .map((m) => `• ${formatarDataHora(m.data)} — ${m.nome}${m.complemento ? ` (${m.complemento})` : ''}`)
+      .join('\n');
+    await notificar(db, {
+      tipo: 'andamento',
+      titulo: `${novosAnd.length} novo(s) andamento(s) — ${nome}`,
+      mensagem: `${novosAnd[0].nome}`,
+      link: `/#/processos/${processo.id}`,
+      emailTexto: `Novas movimentações no processo ${formatarCnj(processo.numero)} (${nome}):\n\n${linhas}`,
+    });
+  }
+
+  return { publicacoes: novasPubs.length, andamentos: novosAnd.length, erros, linhaDeBase, datajudPendente: !!datajudPendente };
+}
+
+/** Nova tentativa só no DataJud para os processos que ficaram pendentes (respeitando a pausa e o prazo). */
+export async function retentarDataJud(db, { fetchFn = fetch, prazoMs = Infinity, inicio = Date.now() } = {}) {
+  const r = { processos: 0, andamentos: 0 };
+  if (await dataJudPausado(db)) return r;
+  const limite = new Date(Date.now() - RETENTATIVA_DATAJUD_MIN * 60_000).toISOString();
+  const lista = await db.all(
+    `SELECT * FROM processos
+     WHERE monitorar = 1 AND status <> 'encerrado' AND datajud_pendente = 1
+       AND (datajud_tentativa IS NULL OR datajud_tentativa < ?)
+     ORDER BY datajud_tentativa NULLS FIRST`,
+    limite,
   );
-
-  if (avisar && !linhaDeBase) {
-    const nome = processo.titulo || processo.cliente || formatarCnj(processo.numero);
-    if (novasPubs.length > 0) {
-      await notificar(db, {
-        tipo: 'publicacao',
-        titulo: `${novasPubs.length} nova(s) publicação(ões) — ${nome}`,
-        mensagem: `${formatarCnj(processo.numero)}: ${resumo(novasPubs[0].tipo || novasPubs[0].texto, 140)}`,
-        link: `/#/processos/${processo.id}`,
-        emailTexto: textoEmailPublicacoes(
-          `Novas publicações no DJEN para o processo ${formatarCnj(processo.numero)} (${nome}).`,
-          novasPubs,
-        ),
-      });
-    }
-    if (novosAnd.length > 0) {
-      const linhas = novosAnd
-        .map((m) => `• ${formatarDataHora(m.data)} — ${m.nome}${m.complemento ? ` (${m.complemento})` : ''}`)
-        .join('\n');
-      await notificar(db, {
-        tipo: 'andamento',
-        titulo: `${novosAnd.length} novo(s) andamento(s) — ${nome}`,
-        mensagem: `${novosAnd[0].nome}`,
-        link: `/#/processos/${processo.id}`,
-        emailTexto: `Novas movimentações no processo ${formatarCnj(processo.numero)} (${nome}):\n\n${linhas}`,
-      });
-    }
+  for (const p of lista) {
+    if (Date.now() - inicio > prazoMs) break;
+    const v = await verificarProcesso(db, p, { fetchFn, djen: false });
+    r.processos++;
+    r.andamentos += v.andamentos;
+    if (v.datajudPendente) break; // continua instável: tenta de novo no próximo ciclo
   }
-
-  return { publicacoes: novasPubs.length, andamentos: novosAnd.length, erros, linhaDeBase };
+  return r;
 }
 
 /** Monitora tudo que sai no DJEN em nome do advogado (número da OAB), se configurado. */
@@ -281,8 +339,10 @@ export async function verificarLembretes(db, agora = new Date()) {
  * Chamado pelo cron-job.org (Vercel) ou pelo relógio interno (servidor comum).
  */
 export async function executarCiclo(db, { fetchFn = fetch, prazoMs = Infinity, pausaMs = 1500 } = {}) {
+  const inicio = Date.now();
   const lembretes = await verificarLembretes(db);
   const monitor = await verificarTudo(db, { fetchFn, forcar: false, prazoMs, pausaMs });
+  const retentativa = monitor.emAndamento ? { processos: 0, andamentos: 0 } : await retentarDataJud(db, { fetchFn, prazoMs, inicio });
   await setConfig(db, 'ultimo_ciclo', agoraIso());
-  return { lembretes, ...monitor };
+  return { lembretes, ...monitor, datajudRetentativas: retentativa.processos, andamentos: (monitor.andamentos || 0) + retentativa.andamentos };
 }
