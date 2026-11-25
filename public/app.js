@@ -313,6 +313,7 @@ function telaLogin(configurado) {
       <form class="card" id="form-login">
         <img src="/icons/icon.svg" alt="">
         <h1>RodJuris</h1>
+        <p class="login-sub">Gestão jurídica</p>
         <p class="muted small" style="text-align:center">${configurado ? 'Digite sua senha para entrar.' : 'Primeiro acesso: crie uma senha para proteger seus dados.'}</p>
         <div class="campo"><label for="senha">Senha</label><input id="senha" type="password" autocomplete="${configurado ? 'current-password' : 'new-password'}" required minlength="${configurado ? 1 : 8}"></div>
         ${configurado ? '' : '<div class="campo"><label for="senha2">Repita a senha</label><input id="senha2" type="password" autocomplete="new-password" required minlength="8"><div class="ajuda">Mínimo de 8 caracteres.</div></div>'}
@@ -354,7 +355,7 @@ function montarShell() {
   $('#app').innerHTML = `
     <div class="shell">
       <nav class="nav" aria-label="Menu principal">
-        <div class="marca"><img src="/icons/icon.svg" alt="">RodJuris</div>
+        <div class="marca"><img src="/icons/icon.svg" alt=""><div><div class="marca-nome">RodJuris</div><div class="marca-sub">Gestão jurídica</div></div></div>
         ${MENU.map(([href, ic, nome, curto]) => `<a href="${href}" data-rota="${ic}" title="${nome}"${ic === 'config' ? ' class="so-desktop-nav"' : ''}>${icone(ic)}<span class="rotulo-longo">${nome}</span><span class="rotulo-curto">${curto}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
       </nav>
       <div class="principal">
@@ -542,11 +543,15 @@ async function telaPainel(c) {
   });
   const d = await api('/painel');
   c.innerHTML = `
+    <div class="saudacao">
+      <div class="saudacao-titulo">${(() => { const h = new Date().getHours(); return h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite'; })()}!</div>
+      <div class="muted">${(() => { const t = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); return t[0].toUpperCase() + t.slice(1); })()}</div>
+    </div>
     <div class="grade grade-stats">
-      <a class="card stat" href="#/processos"><div class="valor">${d.processosAtivos}</div><div class="rotulo">Processos ativos</div></a>
-      <a class="card stat" href="#/processos"><div class="valor">${d.processosMonitorados}</div><div class="rotulo">Monitorados</div></a>
-      <a class="card stat ${d.publicacoesNaoLidas ? 'alerta' : ''}" href="#/publicacoes"><div class="valor">${d.publicacoesNaoLidas}</div><div class="rotulo">Publicações novas</div></a>
-      <a class="card stat ${d.lembretesAtrasados ? 'alerta' : ''}" href="#/lembretes"><div class="valor">${d.lembretesAtrasados}</div><div class="rotulo">Lembretes atrasados</div></a>
+      <a class="card stat cor-azul" href="#/processos"><span class="stat-icone">${icone('processos')}</span><div><div class="valor">${d.processosAtivos}</div><div class="rotulo">Processos ativos</div></div></a>
+      <a class="card stat cor-verde" href="#/processos"><span class="stat-icone">${icone('atualizar')}</span><div><div class="valor">${d.processosMonitorados}</div><div class="rotulo">Monitorados</div></div></a>
+      <a class="card stat cor-dourado ${d.publicacoesNaoLidas ? 'alerta' : ''}" href="#/publicacoes"><span class="stat-icone">${icone('publicacoes')}</span><div><div class="valor">${d.publicacoesNaoLidas}</div><div class="rotulo">Publicações novas</div></div></a>
+      <a class="card stat cor-vermelho ${d.lembretesAtrasados ? 'alerta' : ''}" href="#/lembretes"><span class="stat-icone">${icone('lembretes')}</span><div><div class="valor">${d.lembretesAtrasados}</div><div class="rotulo">Lembretes atrasados</div></div></a>
     </div>
     <p class="small muted" style="margin-top:.75rem">Última verificação automática: ${d.ultimaVerificacao ? `${fmtDataHora(d.ultimaVerificacao)} (${relativo(d.ultimaVerificacao)})` : 'ainda não realizada'}${d.andamentosNaoLidos ? ` · <a href="#/processos">${d.andamentosNaoLidos} andamento(s) novo(s)</a>` : ''}</p>
     ${d.avisosEproc?.length ? `<section class="card" style="margin-top:1rem;border-color:var(--warn)">
