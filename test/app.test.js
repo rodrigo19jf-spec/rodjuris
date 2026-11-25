@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '4');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '5');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -750,4 +750,28 @@ test('eproc: intimação pendente sugere "Tomar ciência" (10 dias corridos) e c
   await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env, forcar: true });
   l = await db.get('SELECT concluido FROM lembretes WHERE id = ?', l.id);
   assert.equal(l.concluido, 1, 'lembrete concluído automaticamente');
+});
+
+test('processo: situação da liminar (cadastro, edição, filtro e validação)', async () => {
+  const NUM_L = gerarCnj(5656565, '2026', '8', '13', '0024');
+  djen.porProcesso[NUM_L] = [];
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const r = await req('/api/processos', { metodo: 'POST', corpo: { numero: NUM_L, titulo: 'MS liminar', liminar: 'nao_analisada', monitorar: false } });
+    assert.equal(r.status, 201);
+    assert.equal(r.corpo.liminar, 'nao_analisada');
+    assert.equal((await req('/api/processos', { metodo: 'POST', corpo: { numero: gerarCnj(5656566), liminar: 'talvez' } })).status, 400);
+    const e = await req(`/api/processos/${r.corpo.id}`, { metodo: 'PUT', corpo: { liminar: 'deferida' } });
+    assert.equal(e.corpo.liminar, 'deferida');
+    const outros = await req(`/api/processos/${r.corpo.id}`, { metodo: 'PUT', corpo: { titulo: 'MS liminar (editado)' } });
+    assert.equal(outros.corpo.liminar, 'deferida', 'editar outro campo não apaga a liminar');
+    assert.deepEqual((await req('/api/processos?liminar=deferida')).corpo.map((p) => p.numero), [NUM_L]);
+    assert.ok(!(await req('/api/processos?liminar=sem_info')).corpo.some((p) => p.numero === NUM_L));
+    const limpa = await req(`/api/processos/${r.corpo.id}`, { metodo: 'PUT', corpo: { liminar: null } });
+    assert.equal(limpa.corpo.liminar, null);
+    await req(`/api/processos/${r.corpo.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
 });

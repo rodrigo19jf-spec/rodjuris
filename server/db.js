@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS processos (
   assunto TEXT,
   status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','suspenso','encerrado')),
   observacoes TEXT,
+  liminar TEXT CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida')),
   monitorar INTEGER NOT NULL DEFAULT 1,
   ultima_verificacao TEXT,
   erro_verificacao TEXT,
@@ -146,6 +147,8 @@ const MIGRACOES = [
   `ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS sugerido INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS origem TEXT;
    CREATE UNIQUE INDEX IF NOT EXISTS ux_lembretes_origem ON lembretes(origem);`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS liminar TEXT
+     CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida'));`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

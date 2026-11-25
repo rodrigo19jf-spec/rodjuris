@@ -48,6 +48,7 @@ function iguaisSeguro(a, b) {
 // ───────────── validação ─────────────
 const TIPOS_LEMBRETE = ['lembrete', 'prazo', 'audiencia', 'reuniao', 'outro'];
 const STATUS_PROC = ['ativo', 'suspenso', 'encerrado'];
+const LIMINAR = ['deferida', 'indeferida', 'nao_analisada', 'nao_requerida'];
 
 function texto(v, max = 5000) {
   if (v == null) return null;
@@ -320,6 +321,10 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.status = STATUS_PROC.includes(body.status) ? body.status : 'ativo';
     }
     if (!parcial || body.monitorar !== undefined) out.monitorar = body.monitorar === false || body.monitorar === 0 ? 0 : 1;
+    if (!parcial || body.liminar !== undefined) {
+      if (body.liminar && !LIMINAR.includes(body.liminar)) throw new Error('Situação da liminar inválida.');
+      out.liminar = body.liminar || null;
+    }
     if (out.numero && !out.tribunal && !parcial) out.tribunal = siglaTribunal(out.numero);
     return out;
   }
@@ -337,6 +342,12 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (STATUS_PROC.includes(req.query.status)) {
         where.push('p.status = ?');
         params.push(req.query.status);
+      }
+      if (LIMINAR.includes(req.query.liminar)) {
+        where.push('p.liminar = ?');
+        params.push(req.query.liminar);
+      } else if (req.query.liminar === 'sem_info') {
+        where.push('p.liminar IS NULL');
       }
       if (req.query.q) {
         const q = `%${String(req.query.q).trim()}%`;

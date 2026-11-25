@@ -75,6 +75,14 @@ function relativo(iso) {
 
 const TIPOS = { lembrete: 'Lembrete', prazo: 'Prazo', audiencia: 'Audiência', reuniao: 'Reunião', outro: 'Outro' };
 const STATUS = { ativo: 'Ativo', suspenso: 'Suspenso', encerrado: 'Encerrado' };
+const LIMINAR = {
+  deferida: 'Liminar deferida',
+  indeferida: 'Liminar indeferida',
+  nao_analisada: 'Liminar não analisada',
+  nao_requerida: 'Não requerida liminar',
+};
+const CLASSE_LIMINAR = { deferida: 'ok', indeferida: 'erro', nao_analisada: 'aviso', nao_requerida: '' };
+const seloLiminar = (v) => (v && LIMINAR[v] ? `<span class="badge ${CLASSE_LIMINAR[v]}">${LIMINAR[v]}</span>` : '');
 const ANTECEDENCIAS = [
   [0, 'Na hora'], [15, '15 minutos antes'], [30, '30 minutos antes'], [60, '1 hora antes'], [120, '2 horas antes'],
   [1440, '1 dia antes'], [2880, '2 dias antes'], [4320, '3 dias antes'], [10080, '1 semana antes'],
@@ -443,15 +451,21 @@ async function telaProcessos(c) {
         <option value="">Todas as situações</option>
         ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${params.get('status') === k ? 'selected' : ''}>${v}</option>`).join('')}
       </select>
+      <select id="filtro-liminar" aria-label="Liminar" style="width:auto">
+        <option value="">Liminar: todas</option>
+        ${Object.entries(LIMINAR).map(([k, v]) => `<option value="${k}" ${params.get('liminar') === k ? 'selected' : ''}>${v}</option>`).join('')}
+        <option value="sem_info" ${params.get('liminar') === 'sem_info' ? 'selected' : ''}>Liminar: não informada</option>
+      </select>
     </div>
     <div id="lista-processos" class="grade grade-2"></div>`;
   const carregar = async () => {
     const q = $('#busca').value.trim();
     const status = $('#filtro-status').value;
-    const lista = await api(`/processos?${new URLSearchParams({ q, status })}`);
+    const liminar = $('#filtro-liminar').value;
+    const lista = await api(`/processos?${new URLSearchParams({ q, status, liminar })}`);
     const alvo = $('#lista-processos');
     if (!lista.length) {
-      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status ? 'Nenhum processo encontrado.' : 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>'}</div>`;
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status || liminar ? 'Nenhum processo encontrado.' : 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>'}</div>`;
       $('#primeiro')?.addEventListener('click', () => formProcesso());
       return;
     }
@@ -468,6 +482,7 @@ async function telaProcessos(c) {
         </div>
         <div class="acoes small" style="margin-top:.5rem">
           <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
+          ${seloLiminar(p.liminar)}
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
@@ -486,6 +501,7 @@ async function telaProcessos(c) {
     t = setTimeout(carregar, 250);
   };
   $('#filtro-status').onchange = carregar;
+  $('#filtro-liminar').onchange = carregar;
   await carregar();
 }
 
@@ -500,7 +516,7 @@ function formProcesso(proc = null, aoSalvar) {
           <input id="f-numero" required inputmode="numeric" placeholder="0000000-00.0000.0.00.0000" value="${esc(formatarCnj(p.numero || ''))}">
           <button type="button" class="btn" id="buscar-datajud">Buscar dados</button>
         </div>
-        <div class="ajuda" id="ajuda-numero">"Buscar dados" preenche tribunal, classe e vara pelo DataJud (CNJ).</div>
+        <div class="ajuda" id="ajuda-numero">"Buscar dados" preenche tribunal, classe e vara pelo eproc/PJe do TJMG ou pelo DataJud (CNJ).</div>
       </div>
       <div class="campo"><label for="f-titulo">Título / apelido</label><input id="f-titulo" placeholder="Ex.: Silva x Banco XYZ" value="${esc(p.titulo || '')}"></div>
       <div class="campos-2">
@@ -515,6 +531,11 @@ function formProcesso(proc = null, aoSalvar) {
         <div class="campo"><label for="f-classe">Classe</label><input id="f-classe" value="${esc(p.classe || '')}"></div>
         <div class="campo"><label for="f-status">Situação</label><select id="f-status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${(p.status || 'ativo') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       </div>
+      <div class="campo"><label for="f-liminar">Liminar</label>
+        <select id="f-liminar">
+          <option value="">— Não informado —</option>
+          ${Object.entries(LIMINAR).map(([k, v]) => `<option value="${k}" ${p.liminar === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></div>
       <div class="campo"><label for="f-assunto">Assunto</label><input id="f-assunto" value="${esc(p.assunto || '')}"></div>
       <div class="campo"><label for="f-obs">Observações</label><textarea id="f-obs">${esc(p.observacoes || '')}</textarea></div>
       <label class="check"><input type="checkbox" id="f-monitorar" ${p.monitorar === 0 ? '' : 'checked'}> Monitorar publicações e andamentos e me avisar quando houver novidade</label>
@@ -553,6 +574,7 @@ function formProcesso(proc = null, aoSalvar) {
           classe: $('#f-classe', m).value,
           assunto: $('#f-assunto', m).value,
           status: $('#f-status', m).value,
+          liminar: $('#f-liminar', m).value || null,
           observacoes: $('#f-obs', m).value,
           monitorar: $('#f-monitorar', m).checked,
         };
@@ -587,6 +609,7 @@ async function telaProcesso(c, id, abaInicial) {
         <div><div class="mono">${esc(formatarCnj(p.numero))}</div>
           <div class="acoes small" style="margin-top:.35rem">
             <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
+            ${seloLiminar(p.liminar)}
             ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
             ${p.pje_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos direto da Consulta Pública do PJe do TJMG">Andamentos via PJe TJMG</span>' : ''}
             ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe">Migrado para o eproc</span>' : ''}
