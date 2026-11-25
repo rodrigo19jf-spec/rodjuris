@@ -99,6 +99,8 @@ const CATEGORIAS_PROV = {
   outro: 'Outro',
 };
 
+let filtroProv = ''; // filtro por tipo na aba Providências
+
 function htmlProvidencias(lista, { acoes = true } = {}) {
   if (!lista.length) return '<p class="small muted">Nenhuma providência registrada ainda.</p>';
   const hoje = ymdLocal(new Date());
@@ -895,11 +897,9 @@ async function telaProcesso(c, id, abaInicial) {
       <div class="acoes" style="margin-top:.75rem">
         ${cumprimentoAberto(p) ? '<button class="btn pequeno primario" id="marcar-cumprida">✓ Marcar como cumprida</button>' : '<button class="btn pequeno" id="reabrir-cumprimento">Reabrir (pendente)</button>'}
         <button class="btn pequeno" id="editar-cumprimento">Editar cumprimento</button>
+        <button class="btn pequeno" id="prov-liminar">${icone('mais')} Registrar providência</button>
+        <button class="btn pequeno" id="ver-provs">Ver providências (${p.providencias.length})</button>
       </div>
-      <div class="secao-titulo"><h3 style="margin:0">Últimas providências</h3>
-        <div class="acoes"><button class="btn pequeno" id="prov-liminar">${icone('mais')} Registrar</button>
-        ${p.providencias.length > 3 ? `<button class="btn pequeno" id="ver-provs">Ver todas (${p.providencias.length})</button>` : ''}</div></div>
-      <div class="small">${htmlProvidencias(p.providencias.slice(0, 3), { acoes: false })}</div>
     </section>` : ''}
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
@@ -925,12 +925,27 @@ async function telaProcesso(c, id, abaInicial) {
             ${a.complemento ? `<div class="small muted">${esc(a.complemento)}</div>` : ''}</li>`).join('')}</ul></div>`
         : `<div class="card vazio">${p.datajud_em ? 'Nenhum andamento encontrado no DataJud.' : 'Ainda não foi possível consultar o DataJud (CNJ). Os andamentos aparecerão aqui assim que ele responder.'}</div>`;
     } else if (nome === 'providencias') {
+      const tiposUsados = Object.keys(CATEGORIAS_PROV).filter((k) => p.providencias.some((x) => x.categoria === k));
       alvo.innerHTML = `
         <div class="acoes" style="margin-bottom:.75rem"><button class="btn primario" id="nova-prov">${icone('mais')} Registrar providência</button>
+          ${tiposUsados.length > 1 ? `<select id="filtro-prov" aria-label="Filtrar por tipo" style="width:auto">
+            <option value="">Todos os tipos (${p.providencias.length})</option>
+            ${tiposUsados.map((k) => `<option value="${k}" ${filtroProv === k ? 'selected' : ''}>${CATEGORIAS_PROV[k]} (${p.providencias.filter((x) => x.categoria === k).length})</option>`).join('')}
+          </select>` : ''}
           <span class="small muted">Ex.: enviado ao setor tal, solicitado cumprimento de decisão, audiência dia tal…</span></div>
-        <div class="card">${htmlProvidencias(p.providencias)}</div>`;
+        <div class="card" id="lista-provs"></div>`;
+      const desenhar = () => {
+        const lista = filtroProv ? p.providencias.filter((x) => x.categoria === filtroProv) : p.providencias;
+        $('#lista-provs', alvo).innerHTML = htmlProvidencias(lista);
+        ligarProvidencias($('#lista-provs', alvo), p.id, p.providencias, () => telaProcesso(c, id, 'providencias'));
+      };
+      $('#filtro-prov', alvo)?.addEventListener('change', (e) => {
+        filtroProv = e.target.value;
+        desenhar();
+      });
+      if (filtroProv && !tiposUsados.includes(filtroProv)) filtroProv = '';
+      desenhar();
       $('#nova-prov', alvo).onclick = () => formProvidencia(p.id, null, () => telaProcesso(c, id, 'providencias'));
-      ligarProvidencias(alvo, p.id, p.providencias, () => telaProcesso(c, id, 'providencias'));
     } else {
       alvo.innerHTML = `
         <div class="acoes" style="margin-bottom:.75rem"><button class="btn primario" id="novo-lemb-proc">${icone('mais')} Novo prazo / lembrete</button></div>
@@ -957,7 +972,9 @@ async function telaProcesso(c, id, abaInicial) {
     toast('Cumprimento reaberto: lembretes reativados.');
     telaProcesso(c, id);
   });
-  $('#prov-liminar')?.addEventListener('click', () => formProvidencia(p.id, null, () => telaProcesso(c, id), { categoria: 'cumprimento' }));
+  $('#prov-liminar')?.addEventListener('click', () =>
+    formProvidencia(p.id, null, () => telaProcesso(c, id, 'providencias'), { categoria: 'cumprimento' }),
+  );
   $('#ver-provs')?.addEventListener('click', () => {
     mostrar('providencias');
     $('.abas', c).scrollIntoView({ behavior: 'smooth', block: 'start' });
