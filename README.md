@@ -4,7 +4,9 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
 
 - **Gerenciar processos judiciais:** cadastro com o número CNJ, validação do dígito verificador e preenchimento automático de tribunal, vara, classe e assunto pelo DataJud.
 - **Monitorar publicações:** consulta automática ao **DJEN / Comunica PJe** (Diário de Justiça Eletrônico Nacional), por processo e, se quiser, pelo seu **número da OAB**.
-- **Acompanhar andamentos:** movimentações processuais vindas do **DataJud** (API Pública do CNJ).
+- **Acompanhar andamentos:**
+  - processos do **TJMG no PJe:** lidos direto da **Consulta Pública do PJe**, mais rápido, sem esperar o DataJud. O app detecta quando o processo é migrado para o eproc;
+  - demais processos: pelo **DataJud** (API Pública do CNJ), com novas tentativas automáticas quando ele estiver instável.
 - **Cadastrar lembretes e prazos:** tipos prazo, audiência, reunião e lembrete, com aviso antecipado (na hora, 15 min, 1 h, 1 dia, 1 semana…).
 - **Usar a agenda:** calendário mensal com todos os compromissos.
 - **Receber avisos** dentro do app (sininho), **por e-mail** e por **notificação no celular** (push).
@@ -112,6 +114,7 @@ api/index.js      ponto de entrada na Vercel (todas as rotas /api)
   app.js          API REST + autenticação por senha
   db.js           banco PostgreSQL (Supabase/Neon na Vercel; PGlite embutido no modo local)
   cnj.js          número CNJ: validação, formatação, tribunal
+  pje_tjmg.js     leitura da Consulta Pública do PJe do TJMG (desligue com PJE_TJMG=0)
   fontes.js       clientes DJEN (Comunica PJe) e DataJud
   monitor.js      verificação de publicações, andamentos e lembretes
   notificador.js  avisos no app, e-mail (nodemailer) e push (web-push)

@@ -1,6 +1,7 @@
 import { agoraIso, getConfig, setConfig } from './db.js';
 import { formatarCnj, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, buscarPublicacoesDjen } from './fontes.js';
+import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { formatarDataHora, notificar } from './notificador.js';
 
 const DIA = 86_400_000;
@@ -53,12 +54,12 @@ async function gravarPublicacoes(db, itens, { processoId = null, linhaDeBase = f
   return novas;
 }
 
-async function gravarAndamentos(db, processoId, movimentos, { linhaDeBase = false } = {}) {
+async function gravarAndamentos(db, processoId, movimentos, { linhaDeBase = false, fonte = 'datajud' } = {}) {
   const novos = [];
   for (const m of movimentos) {
     const r = await db.run(
-      `INSERT INTO andamentos (processo_id, external_key, data, nome, complemento, lida)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO andamentos (processo_id, external_key, data, nome, complemento, lida, fonte)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (processo_id, external_key) DO NOTHING`,
       processoId,
       m.external_key,
@@ -66,6 +67,7 @@ async function gravarAndamentos(db, processoId, movimentos, { linhaDeBase = fals
       m.nome,
       m.complemento,
       linhaDeBase ? 1 : 0,
+      fonte,
     );
     if (r.rowCount > 0) novos.push(m);
   }
@@ -93,74 +95,128 @@ async function pausarDataJud(db) {
   await setConfig(db, 'datajud_pausa_ate', new Date(Date.now() + PAUSA_DATAJUD_MIN * 60_000).toISOString());
 }
 
+const DIAS_RECHECAR_PJE_AUSENTE = 7;
+
+/** O processo deve ser consultado no PJe do TJMG nesta verificação? */
+function deveConsultarPje(processo) {
+  if (process.env.PJE_TJMG === '0' || !ehTjmg(processo.numero)) return false;
+  if (processo.pje_situacao === 'migrado') return false;
+  if (processo.pje_situacao === 'ausente') {
+    // Processos que não estão no PJe são reconferidos de vez em quando.
+    return !processo.pje_verificado_em || Date.now() - new Date(processo.pje_verificado_em).getTime() > DIAS_RECHECAR_PJE_AUSENTE * DIA;
+  }
+  return true;
+}
+
+async function preencherCadastro(db, processoId, dados) {
+  await db.run(
+    `UPDATE processos SET
+       tribunal = COALESCE(NULLIF(tribunal, ''), ?),
+       classe   = COALESCE(NULLIF(classe, ''), ?),
+       orgao    = COALESCE(NULLIF(orgao, ''), ?),
+       assunto  = COALESCE(NULLIF(assunto, ''), ?)
+     WHERE id = ?`,
+    dados.tribunal ?? null,
+    dados.classe ?? null,
+    dados.orgao ?? null,
+    dados.assunto ?? null,
+    processoId,
+  );
+}
+
 /**
- * Verifica um processo: publicações no DJEN + movimentações no DataJud (em paralelo).
- * Opções djen/datajud permitem consultar só uma das fontes (ex.: nova tentativa só do DataJud).
+ * Verifica um processo:
+ * - publicações no DJEN;
+ * - andamentos no PJe do TJMG (se o processo estiver lá) ou, senão, no DataJud.
+ * Opções djen/datajud/pje permitem consultar só algumas fontes (ex.: nova tentativa só do DataJud).
  */
 export async function verificarProcesso(
   db,
   processo,
-  { fetchFn = fetch, avisar = true, djen: usarDjen = true, datajud: usarDatajud = true } = {},
+  { fetchFn = fetch, avisar = true, djen: usarDjen = true, datajud: usarDatajud = true, pje: usarPje = true } = {},
 ) {
   const linhaDeBase = !processo.ultima_verificacao; // publicações
-  const linhaDeBaseDJ = !processo.datajud_em; // andamentos: só a 1ª resposta bem-sucedida do DataJud
   const desde = linhaDeBase
     ? new Date(Date.now() - DIAS_LINHA_DE_BASE * DIA)
     : new Date(new Date(processo.ultima_verificacao).getTime() - DIAS_MARGEM * DIA);
   const erros = [];
-  const pausado = usarDatajud && (await dataJudPausado(db));
+  const avisosAndamentos = []; // andamentos novos (fora da linha de base) para avisar
+  const agora = agoraIso();
 
-  const [djen, datajud] = await Promise.allSettled([
-    usarDjen ? buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn }) : Promise.resolve(null),
-    usarDatajud && !pausado ? buscarProcessoDataJud(processo.numero, { fetchFn }) : Promise.resolve(null),
-  ]);
+  const promessaDjen = usarDjen
+    ? buscarPublicacoesDjen({ numeroProcesso: processo.numero }, desde, { fetchFn }).then(
+        (v) => ({ ok: true, v }),
+        (e) => ({ ok: false, e }),
+      )
+    : null;
 
-  let novasPubs = [];
-  if (usarDjen) {
-    if (djen.status === 'fulfilled') novasPubs = await gravarPublicacoes(db, djen.value, { processoId: processo.id, linhaDeBase });
-    else erros.push(`DJEN: ${djen.reason?.message || djen.reason}`);
-  }
-
-  let novosAnd = [];
-  let datajudPendente = Number(processo.datajud_pendente || 0);
-  if (usarDatajud) {
-    const agora = agoraIso();
-    if (pausado) {
-      datajudPendente = 1;
-    } else if (datajud.status === 'fulfilled') {
-      datajudPendente = 0;
-      const dj = datajud.value;
-      if (dj) {
-        novosAnd = await gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase: linhaDeBaseDJ });
-        // Preenche campos vazios do cadastro com os dados oficiais.
+  // 1) PJe do TJMG (rápido e direto do tribunal), quando aplicável.
+  let pjeAtivo = false;
+  let migrouAgora = null;
+  if (usarPje && deveConsultarPje(processo)) {
+    try {
+      const pje = await buscarProcessoPjeTjmg(processo.numero, { fetchFn });
+      if (!pje) {
+        await db.run("UPDATE processos SET pje_situacao = 'ausente', pje_verificado_em = ? WHERE id = ?", agora, processo.id);
+      } else {
+        const baseDoPje = !processo.pje_em;
+        const novos = await gravarAndamentos(db, processo.id, pje.movimentos, { linhaDeBase: baseDoPje, fonte: 'pje' });
+        if (!baseDoPje) avisosAndamentos.push(...novos);
+        await preencherCadastro(db, processo.id, pje);
+        const situacao = pje.migrado ? 'migrado' : 'ativo';
+        if (pje.migrado && processo.pje_situacao !== 'migrado') migrouAgora = pje.migrado;
         await db.run(
-          `UPDATE processos SET
-             tribunal = COALESCE(NULLIF(tribunal, ''), ?),
-             classe   = COALESCE(NULLIF(classe, ''), ?),
-             orgao    = COALESCE(NULLIF(orgao, ''), ?),
-             assunto  = COALESCE(NULLIF(assunto, ''), ?)
-           WHERE id = ?`,
-          dj.tribunal,
-          dj.classe,
-          dj.orgao,
-          dj.assunto,
+          'UPDATE processos SET pje_situacao = ?, pje_em = COALESCE(pje_em, ?), pje_verificado_em = ? WHERE id = ?',
+          situacao,
+          agora,
+          agora,
           processo.id,
         );
+        pjeAtivo = situacao === 'ativo';
       }
-      await db.run('UPDATE processos SET datajud_em = ? WHERE id = ?', agora, processo.id);
+    } catch (e) {
+      if (!e?.temporario) erros.push(`PJe TJMG: ${e?.message || e}`);
+      pjeAtivo = processo.pje_situacao === 'ativo'; // instabilidade: não cai para o DataJud nesta rodada
+    }
+  }
+
+  // 2) DataJud, só se o processo não estiver sendo acompanhado pelo PJe.
+  let datajudPendente = Number(processo.datajud_pendente || 0);
+  if (usarDatajud && pjeAtivo) {
+    datajudPendente = 0;
+    await db.run('UPDATE processos SET datajud_pendente = 0 WHERE id = ?', processo.id);
+  } else if (usarDatajud) {
+    const linhaDeBaseDJ = !processo.datajud_em; // só a 1ª resposta bem-sucedida do DataJud
+    if (await dataJudPausado(db)) {
+      datajudPendente = 1;
     } else {
-      const e = datajud.reason;
-      if (e?.temporario) {
-        datajudPendente = 1; // instabilidade do CNJ: tenta de novo em breve, sem tratar como erro
-        if (e.status === 429 || !e.status) await pausarDataJud(db);
-      } else {
-        erros.push(`DataJud: ${e?.message || e}`);
+      try {
+        const dj = await buscarProcessoDataJud(processo.numero, { fetchFn });
+        datajudPendente = 0;
+        if (dj) {
+          const novos = await gravarAndamentos(db, processo.id, dj.movimentos, { linhaDeBase: linhaDeBaseDJ, fonte: 'datajud' });
+          if (!linhaDeBaseDJ) avisosAndamentos.push(...novos);
+          await preencherCadastro(db, processo.id, dj);
+        }
+        await db.run('UPDATE processos SET datajud_em = ? WHERE id = ?', agora, processo.id);
+      } catch (e) {
+        if (e?.temporario) {
+          datajudPendente = 1; // instabilidade do CNJ: tenta de novo em breve, sem tratar como erro
+          if (e.status === 429 || !e.status) await pausarDataJud(db);
+        } else {
+          erros.push(`DataJud: ${e?.message || e}`);
+        }
       }
     }
     await db.run('UPDATE processos SET datajud_pendente = ?, datajud_tentativa = ? WHERE id = ?', datajudPendente, agora, processo.id);
   }
 
-  if (usarDjen) {
+  // 3) Publicações do DJEN.
+  let novasPubs = [];
+  if (promessaDjen) {
+    const r = await promessaDjen;
+    if (r.ok) novasPubs = await gravarPublicacoes(db, r.v, { processoId: processo.id, linhaDeBase });
+    else erros.push(`DJEN: ${r.e?.message || r.e}`);
     await db.run(
       'UPDATE processos SET ultima_verificacao = ?, erro_verificacao = ? WHERE id = ?',
       agoraIso(),
@@ -182,20 +238,36 @@ export async function verificarProcesso(
       ),
     });
   }
-  if (avisar && !linhaDeBaseDJ && novosAnd.length > 0) {
-    const linhas = novosAnd
+  if (avisar && avisosAndamentos.length > 0) {
+    const linhas = avisosAndamentos
       .map((m) => `• ${formatarDataHora(m.data)} — ${m.nome}${m.complemento ? ` (${m.complemento})` : ''}`)
       .join('\n');
     await notificar(db, {
       tipo: 'andamento',
-      titulo: `${novosAnd.length} novo(s) andamento(s) — ${nome}`,
-      mensagem: `${novosAnd[0].nome}`,
+      titulo: `${avisosAndamentos.length} novo(s) andamento(s) — ${nome}`,
+      mensagem: `${avisosAndamentos[0].nome}`,
       link: `/#/processos/${processo.id}`,
       emailTexto: `Novas movimentações no processo ${formatarCnj(processo.numero)} (${nome}):\n\n${linhas}`,
     });
   }
+  if (avisar && migrouAgora && processo.pje_em) {
+    await notificar(db, {
+      tipo: 'andamento',
+      titulo: `Processo migrado do PJe para o eproc — ${nome}`,
+      mensagem: `${formatarCnj(processo.numero)}: os andamentos passam a vir do DataJud.`,
+      link: `/#/processos/${processo.id}`,
+      emailTexto: `O processo ${formatarCnj(processo.numero)} (${nome}) foi migrado do PJe para o eproc no TJMG (${formatarDataHora(migrouAgora.data)}).\nA partir de agora, os andamentos serão acompanhados pelo DataJud e as publicações continuam pelo DJEN.`,
+    });
+  }
 
-  return { publicacoes: novasPubs.length, andamentos: novosAnd.length, erros, linhaDeBase, datajudPendente: !!datajudPendente };
+  return {
+    publicacoes: novasPubs.length,
+    andamentos: avisosAndamentos.length,
+    erros,
+    linhaDeBase,
+    datajudPendente: !!datajudPendente,
+    pje: pjeAtivo,
+  };
 }
 
 /** Nova tentativa só no DataJud para os processos que ficaram pendentes (respeitando a pausa e o prazo). */
@@ -212,7 +284,7 @@ export async function retentarDataJud(db, { fetchFn = fetch, prazoMs = Infinity,
   );
   for (const p of lista) {
     if (Date.now() - inicio > prazoMs) break;
-    const v = await verificarProcesso(db, p, { fetchFn, djen: false });
+    const v = await verificarProcesso(db, p, { fetchFn, djen: false, pje: false });
     r.processos++;
     r.andamentos += v.andamentos;
     if (v.datajudPendente) break; // continua instável: tenta de novo no próximo ciclo

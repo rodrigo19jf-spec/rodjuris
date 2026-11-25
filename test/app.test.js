@@ -271,8 +271,14 @@ test('DJEN bloqueado por país: explica que o servidor precisa estar no Brasil',
 test('botão de diagnóstico do CNJ', async () => {
   const r = await req('/api/diagnostico', { metodo: 'POST', corpo: {} });
   assert.equal(r.status, 200);
-  assert.equal(r.corpo.length, 2);
-  assert.ok(r.corpo.every((x) => x.ok));
+  assert.deepEqual(r.corpo.map((x) => x.fonte), ['DJEN (publicações)', 'DataJud (andamentos)', 'PJe TJMG (andamentos)']);
+  assert.ok(r.corpo.slice(0, 2).every((x) => x.ok));
+  process.env.PJE_TJMG = '0';
+  try {
+    assert.equal((await req('/api/diagnostico', { metodo: 'POST', corpo: {} })).corpo.length, 2, 'PJE_TJMG=0 desliga o PJe');
+  } finally {
+    delete process.env.PJE_TJMG;
+  }
 });
 
 test('agendador (/api/cron): exige a chave e executa lembretes + monitoramento', async () => {
@@ -384,7 +390,121 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '1');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '2');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
+});
+
+// ───────── PJe TJMG (páginas sintéticas imitando a Consulta Pública) ─────────
+const pjeTjmg = { processos: {}, chamadasDataJud: [] };
+function htmlResposta(html, { cookies = [] } = {}) {
+  const buf = Buffer.from(html, 'latin1');
+  return {
+    ok: true,
+    status: 200,
+    headers: { getSetCookie: () => cookies },
+    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    text: async () => html,
+    json: async () => JSON.parse(html),
+  };
+}
+function detalhePjeHtml(numero, eventos) {
+  const linhas = eventos.map((e) => `<tr class="rich-table-row"><td class="rich-table-cell"><span>${e}</span></td><td></td></tr>`).join('');
+  return `<html><body><div><label>N&uacute;mero Processo</label></div><div>${formatarCnj(numero)}</div>
+    <div><label>Classe Judicial</label></div><div>[C&Iacute;VEL] PROCEDIMENTO COMUM C&Iacute;VEL (7)</div>
+    <div><label>Assunto</label></div><div>Indeniza&ccedil;&atilde;o por Dano Moral</div>
+    <div><label>&Oacute;rg&atilde;o Julgador</label></div><div>2&ordf; Vara C&iacute;vel da Comarca de Belo Horizonte</div>
+    <table id="j_id145:processoEvento"><thead><tr><th>Movimento</th></tr></thead><tbody id="j_id145:processoEvento:tb">${linhas}</tbody></table></body></html>`;
+}
+const fetchComPje = async (url, init = {}) => {
+  const u = new URL(url);
+  if (u.host === 'pje-consulta-publica.tjmg.jus.br') {
+    if (u.pathname.endsWith('/ConsultaPublica/listView.seam') && (init.method || 'GET') === 'GET') {
+      return htmlResposta(
+        `<form id="fPP" name="fPP" method="post" action="/pje/ConsultaPublica/listView.seam;jsessionid=abc"><input type="hidden" name="javax.faces.ViewState" id="javax.faces.ViewState" value="j_id1" /></form><script>function executarReCaptcha() { if (false) { grecaptcha.execute(); } }</script>`,
+        { cookies: ['JSESSIONID=abc; path=/pje', 'BIGipServer=xyz; path=/'] },
+      );
+    }
+    if (init.method === 'POST') {
+      assert.match(init.headers.Cookie, /JSESSIONID=abc/, 'envia os cookies da sessão');
+      const numero = new URLSearchParams(init.body).get('fPP:numProcesso-inputNumeroProcessoDecoration:numProcesso-inputNumeroProcesso');
+      const achou = pjeTjmg.processos[numero.replace(/\D/g, '')];
+      return htmlResposta(
+        achou
+          ? `<span>1 resultados encontrados</span><a href="/pje/ConsultaPublica/DetalheProcessoConsultaPublica/listView.seam?ca=00ff">${numero}</a>`
+          : '<span>0 resultados encontrados</span>',
+      );
+    }
+    if (u.pathname.includes('DetalheProcessoConsultaPublica')) {
+      const [numero, eventos] = Object.entries(pjeTjmg.processos)[0];
+      return htmlResposta(detalhePjeHtml(numero, eventos));
+    }
+  }
+  if (u.host === 'api-publica.datajud.cnj.jus.br') pjeTjmg.chamadasDataJud.push(JSON.parse(init.body).query.match.numeroProcesso);
+  return fetchFalso(url, init);
+};
+
+test('PJe TJMG: lê dados e movimentações (com acentos em ISO-8859-1)', async () => {
+  const { lerDetalhePje, dataHoraBrParaIso, ehTjmg } = await import('../server/pje_tjmg.js');
+  const NUM_MG = gerarCnj(4444444, '2024', '8', '13', '0024');
+  assert.ok(ehTjmg(NUM_MG));
+  assert.ok(!ehTjmg(NUM));
+  const d = lerDetalhePje(detalhePjeHtml(NUM_MG, ['17/07/2026 14:29:11 - Despacho (Despacho)', '18/05/2026 10:19:09 - Conclusos para despacho']));
+  assert.equal(d.classe, '[CÍVEL] PROCEDIMENTO COMUM CÍVEL (7)');
+  assert.equal(d.orgao, '2ª Vara Cível da Comarca de Belo Horizonte');
+  assert.equal(d.movimentos.length, 2);
+  assert.equal(d.movimentos[0].nome, 'Despacho (Despacho)');
+  assert.equal(d.movimentos[0].data, '2026-07-17T17:29:11.000Z');
+  assert.equal(dataHoraBrParaIso('02/09/2026 00:28:46'), '2026-09-02T03:28:46.000Z');
+});
+
+test('PJe TJMG: monitora pelo PJe (sem DataJud), avisa novidades e detecta migração para o eproc', async () => {
+  const { verificarProcesso } = await import('../server/monitor.js');
+  await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+  const NUM_MG = gerarCnj(5555555, '2024', '8', '13', '0024');
+  djen.porProcesso[NUM_MG] = [];
+  pjeTjmg.processos = { [NUM_MG]: ['10/11/2026 09:00:00 - Juntada de Petição', '01/11/2026 08:00:00 - Distribuído por sorteio'] };
+  pjeTjmg.chamadasDataJud = [];
+  let p = await db.get('INSERT INTO processos (numero, titulo) VALUES (?, ?) RETURNING *', NUM_MG, 'Caso MG');
+  const avisos0 = await db.valor('SELECT COUNT(*)::int FROM notificacoes');
+
+  await verificarProcesso(db, p, { fetchFn: fetchComPje });
+  p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+  assert.equal(p.pje_situacao, 'ativo');
+  assert.equal(p.classe, '[CÍVEL] PROCEDIMENTO COMUM CÍVEL (7)', 'cadastro preenchido pelo PJe');
+  assert.equal(await db.valor("SELECT COUNT(*)::int FROM andamentos WHERE processo_id = ? AND fonte = 'pje' AND lida = 1", p.id), 2, 'linha de base');
+  assert.deepEqual(pjeTjmg.chamadasDataJud, [], 'processo no PJe não consulta o DataJud');
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisos0);
+
+  pjeTjmg.processos[NUM_MG].unshift('25/11/2026 15:10:00 - Proferido despacho de mero expediente');
+  const r = await verificarProcesso(db, p, { fetchFn: fetchComPje });
+  assert.equal(r.andamentos, 1);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisos0 + 1);
+
+  pjeTjmg.processos[NUM_MG].unshift('26/11/2026 00:37:51 - Migrada a tramitação do processo do sistema eletrônico originário para o outro sistema eletrônico');
+  p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+  await verificarProcesso(db, p, { fetchFn: fetchComPje });
+  p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+  assert.equal(p.pje_situacao, 'migrado');
+  assert.ok(await db.get("SELECT 1 FROM notificacoes WHERE titulo LIKE 'Processo migrado do PJe para o eproc%'"));
+  assert.deepEqual(pjeTjmg.chamadasDataJud, [NUM_MG], 'após a migração, volta a usar o DataJud');
+  await db.run('DELETE FROM processos WHERE id = ?', p.id);
+});
+
+test('PJe TJMG: processo que não está no PJe usa o DataJud e é reconferido depois de alguns dias', async () => {
+  const { verificarProcesso } = await import('../server/monitor.js');
+  await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+  const NUM_EPROC = gerarCnj(6666666, '2026', '8', '13', '0024');
+  djen.porProcesso[NUM_EPROC] = [];
+  pjeTjmg.processos = {};
+  pjeTjmg.chamadasDataJud = [];
+  let p = await db.get('INSERT INTO processos (numero) VALUES (?) RETURNING *', NUM_EPROC);
+  await verificarProcesso(db, p, { fetchFn: fetchComPje });
+  p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+  assert.equal(p.pje_situacao, 'ausente');
+  assert.deepEqual(pjeTjmg.chamadasDataJud, [NUM_EPROC]);
+  const verificadoEm = p.pje_verificado_em;
+  await verificarProcesso(db, p, { fetchFn: fetchComPje });
+  assert.equal((await db.get('SELECT pje_verificado_em FROM processos WHERE id = ?', p.id)).pje_verificado_em, verificadoEm, 'não reconsulta o PJe em seguida');
+  await db.run('DELETE FROM processos WHERE id = ?', p.id);
 });

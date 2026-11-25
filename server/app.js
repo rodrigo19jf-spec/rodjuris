@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { getConfig, setConfig, agoraIso } from './db.js';
 import { cnjValido, siglaTribunal, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, testarConexoes } from './fontes.js';
+import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -355,10 +356,19 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       const numero = somenteDigitos(req.body?.numero);
       if (numero.length !== 20 || !cnjValido(numero)) return erro(res, 400, 'Número do processo inválido.');
+      // TJMG: tenta primeiro a Consulta Pública do PJe (rápida e direto do tribunal).
+      if (ehTjmg(numero) && process.env.PJE_TJMG !== '0') {
+        try {
+          const pje = await buscarProcessoPjeTjmg(numero, { fetchFn });
+          if (pje) return res.json({ ...pje, fonte: 'PJe TJMG', movimentos: pje.movimentos.slice(0, 5) });
+        } catch (err) {
+          console.warn('[pje-tjmg]', err.message);
+        }
+      }
       try {
         const dj = await buscarProcessoDataJud(numero, { fetchFn });
         if (!dj) return erro(res, 404, 'Processo não encontrado no DataJud (pode estar em segredo de justiça ou ainda não indexado).');
-        res.json({ ...dj, movimentos: dj.movimentos.slice(0, 5) });
+        res.json({ ...dj, fonte: 'DataJud', movimentos: dj.movimentos.slice(0, 5) });
       } catch (err) {
         erro(
           res,
@@ -700,7 +710,20 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     '/api/diagnostico',
     a(async (req, res) => {
       const numero = somenteDigitos(req.body?.numero);
-      res.json(await testarConexoes(numero.length === 20 && cnjValido(numero) ? numero : undefined, { fetchFn }));
+      const [cnj, pje] = await Promise.all([
+        testarConexoes(numero.length === 20 && cnjValido(numero) ? numero : undefined, { fetchFn }),
+        (async () => {
+          if (process.env.PJE_TJMG === '0') return null;
+          try {
+            // Processo público de exemplo do PJe do TJMG (só para testar a conexão).
+            const r = await buscarProcessoPjeTjmg('50014287820248130251', { fetchFn });
+            return { fonte: 'PJe TJMG (andamentos)', ok: true, mensagem: r ? `Conectado — ${r.movimentos.length} movimentação(ões) lidas no processo de teste.` : 'Conectado — processo de teste não encontrado.' };
+          } catch (e) {
+            return { fonte: 'PJe TJMG (andamentos)', ok: false, mensagem: e.message };
+          }
+        })(),
+      ]);
+      res.json(pje ? [...cnj, pje] : cnj);
     }),
   );
 

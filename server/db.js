@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS processos (
   datajud_em TEXT,                         -- última consulta bem-sucedida ao DataJud
   datajud_pendente INTEGER NOT NULL DEFAULT 0, -- 1 = DataJud falhou, tentar de novo
   datajud_tentativa TEXT,                  -- última tentativa no DataJud
+  pje_situacao TEXT,                       -- PJe TJMG: null (não verificado), 'ativo', 'ausente', 'migrado'
+  pje_em TEXT,                             -- primeira leitura bem-sucedida no PJe (linha de base)
+  pje_verificado_em TEXT,
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
   atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS andamentos (
   data TEXT,
   nome TEXT,
   complemento TEXT,
+  fonte TEXT,                              -- 'datajud' ou 'pje'
   lida INTEGER NOT NULL DEFAULT 0,
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
   UNIQUE (processo_id, external_key)
@@ -114,6 +118,11 @@ const MIGRACOES = [
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS datajud_tentativa TEXT;
    UPDATE processos SET datajud_em = ultima_verificacao
      WHERE datajud_em IS NULL AND EXISTS (SELECT 1 FROM andamentos an WHERE an.processo_id = processos.id);`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS pje_situacao TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS pje_em TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS pje_verificado_em TEXT;
+   ALTER TABLE andamentos ADD COLUMN IF NOT EXISTS fonte TEXT;
+   UPDATE andamentos SET fonte = 'datajud' WHERE fonte IS NULL;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

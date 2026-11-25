@@ -452,7 +452,8 @@ async function telaProcessos(c) {
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
-          ${p.monitorar && p.datajud_pendente ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
+          ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
+          ${p.pje_situacao === 'ativo' ? '<span class="badge ok">PJe TJMG</span>' : ''}
         </div>
         ${p.cliente && p.titulo ? `<div class="small muted" style="margin-top:.35rem">Cliente: ${esc(p.cliente)}</div>` : ''}
         ${p.proximo_lembrete ? `<div class="small" style="margin-top:.25rem">Próximo compromisso: ${fmtDataHora(p.proximo_lembrete)}</div>` : ''}
@@ -513,7 +514,7 @@ function formProcesso(proc = null, aoSalvar) {
           pre('#f-orgao', d.orgao);
           pre('#f-classe', d.classe);
           pre('#f-assunto', d.assunto);
-          ajuda.textContent = `Encontrado: ${d.classe || ''} — ${d.orgao || ''}${d.movimentos[0] ? `. Último andamento: ${d.movimentos[0].nome} (${fmtData(d.movimentos[0].data)})` : ''}`;
+          ajuda.textContent = `Encontrado${d.fonte ? ` (${d.fonte})` : ''}: ${d.classe || ''} — ${d.orgao || ''}${d.movimentos[0] ? `. Último andamento: ${d.movimentos[0].nome} (${fmtData(d.movimentos[0].data)})` : ''}${d.migrado ? '. ⚠️ Processo migrado para o eproc.' : ''}`;
         } catch (err) {
           ajuda.textContent = err.message;
         } finally {
@@ -567,6 +568,8 @@ async function telaProcesso(c, id, abaInicial) {
           <div class="acoes small" style="margin-top:.35rem">
             <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
             ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
+            ${p.pje_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos direto da Consulta Pública do PJe do TJMG">Andamentos via PJe TJMG</span>' : ''}
+            ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe; andamentos via DataJud">Migrado para o eproc</span>' : ''}
           </div></div>
         <div class="acoes"><button class="btn pequeno" id="editar">Editar</button><button class="btn pequeno perigo" id="excluir">Excluir</button></div>
       </div>
@@ -578,7 +581,7 @@ async function telaProcesso(c, id, abaInicial) {
       <label class="check small" style="margin-top:.75rem"><input type="checkbox" id="monitorar" ${p.monitorar ? 'checked' : ''}> Monitorar e me avisar sobre novas publicações e andamentos</label>
       <p class="small muted" style="margin:.5rem 0 0">Última verificação: ${p.ultima_verificacao ? fmtDataHora(p.ultima_verificacao) : 'pendente'}</p>
       ${p.erro_verificacao ? `<div class="alerta-caixa erro small" style="margin-top:.5rem">${esc(p.erro_verificacao)}</div>` : ''}
-      ${p.monitorar && p.datajud_pendente ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
+      ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
     </div>
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
@@ -599,7 +602,7 @@ async function telaProcesso(c, id, abaInicial) {
       alvo.innerHTML = p.andamentos.length
         ? `<div class="card"><ul class="lista">${p.andamentos.map((a) => `
             <li class="${a.lida ? '' : 'nao-lida'}"><div class="small muted">${fmtDataHora(a.data)}</div>
-            <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'}</div>
+            <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'} <span class="badge" style="font-weight:500">${a.fonte === 'pje' ? 'PJe TJMG' : 'DataJud'}</span></div>
             ${a.complemento ? `<div class="small muted">${esc(a.complemento)}</div>` : ''}</li>`).join('')}</ul></div>`
         : `<div class="card vazio">${p.datajud_em ? 'Nenhum andamento encontrado no DataJud.' : 'Ainda não foi possível consultar o DataJud (CNJ). Os andamentos aparecerão aqui assim que ele responder.'}</div>`;
     } else {
