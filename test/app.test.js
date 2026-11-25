@@ -271,11 +271,11 @@ test('DJEN bloqueado por país: explica que o servidor precisa estar no Brasil',
 test('botão de diagnóstico do CNJ', async () => {
   const r = await req('/api/diagnostico', { metodo: 'POST', corpo: {} });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.corpo.map((x) => x.fonte), ['DJEN (publicações)', 'DataJud (andamentos)', 'PJe TJMG (andamentos)']);
+  assert.deepEqual(r.corpo.map((x) => x.fonte), ['DJEN (publicações)', 'DataJud (andamentos)', 'PJe TJMG (andamentos)', 'eproc TJMG (MNI)']);
   assert.ok(r.corpo.slice(0, 2).every((x) => x.ok));
   process.env.PJE_TJMG = '0';
   try {
-    assert.equal((await req('/api/diagnostico', { metodo: 'POST', corpo: {} })).corpo.length, 2, 'PJE_TJMG=0 desliga o PJe');
+    assert.equal((await req('/api/diagnostico', { metodo: 'POST', corpo: {} })).corpo.length, 3, 'PJE_TJMG=0 desliga o PJe (o eproc continua listado)');
   } finally {
     delete process.env.PJE_TJMG;
   }
@@ -390,7 +390,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '2');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '3');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -507,4 +507,127 @@ test('PJe TJMG: processo que não está no PJe usa o DataJud e é reconferido de
   await verificarProcesso(db, p, { fetchFn: fetchComPje });
   assert.equal((await db.get('SELECT pje_verificado_em FROM processos WHERE id = ?', p.id)).pje_verificado_em, verificadoEm, 'não reconsulta o PJe em seguida');
   await db.run('DELETE FROM processos WHERE id = ?', p.id);
+});
+
+// ───────── eproc TJMG via MNI 2.2.2 (respostas SOAP simuladas) ─────────
+const mni = { processos: {}, avisos: [], operacoes: [], loginOk: true };
+function soap(corpo, encoding = 'UTF-8') {
+  return `<?xml version="1.0" encoding="${encoding}"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://www.cnj.jus.br/servico-intercomunicacao-2.2.2/" xmlns:ns2="http://www.cnj.jus.br/tipos-servico-intercomunicacao-2.2.2" xmlns:ns3="http://www.cnj.jus.br/intercomunicacao-2.2.2"><SOAP-ENV:Body>${corpo}</SOAP-ENV:Body></SOAP-ENV:Envelope>`;
+}
+function xmlResposta(xml) {
+  const buf = Buffer.from(xml, /encoding="ISO-8859-1"/.test(xml) ? 'latin1' : 'utf8');
+  return { ok: true, status: 200, headers: { get: () => 'text/xml', getSetCookie: () => [] }, arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+}
+const fetchComEproc = async (url, init = {}) => {
+  const u = new URL(url);
+  if (u.host === 'eproc1g-ws.tjmg.jus.br' || u.host === 'eproc2g-ws.tjmg.jus.br') {
+    const op = init.headers.SOAPAction.replace(/"/g, '').split('/').pop();
+    mni.operacoes.push(`${u.host.slice(0, 7)}:${op}`);
+    assert.notEqual(op, 'consultarTeorComunicacao', 'nunca registra ciência');
+    assert.match(init.body, /<tip:idConsultante>usuario-teste<\/tip:idConsultante>/);
+    if (!mni.loginOk) return xmlResposta(soap(`<ns1:${op}Resposta><ns2:sucesso>false</ns2:sucesso><ns2:mensagem>Usuário ou senha inválidos</ns2:mensagem></ns1:${op}Resposta>`));
+    if (op === 'consultarProcesso') {
+      const numero = init.body.match(/<tip:numeroProcesso>(\d+)</)[1];
+      assert.match(init.body, /<tip:incluirDocumentos>false</, 'não baixa documentos');
+      const movs = u.host.startsWith('eproc1g') ? mni.processos[numero] : null;
+      if (!movs) return xmlResposta(soap(`<ns1:consultarProcessoResposta><ns2:sucesso>false</ns2:sucesso><ns2:mensagem>Processo não encontrado</ns2:mensagem></ns1:consultarProcessoResposta>`));
+      const xmlMovs = movs
+        .map(([quando, desc, id]) => `<ns3:movimento dataHora="${quando}" identificadorMovimento="${id}"><ns3:movimentoLocal codigoMovimento="1" descricao="${desc}"/></ns3:movimento>`)
+        .join('');
+      return xmlResposta(
+        soap(`<ns1:consultarProcessoResposta><ns2:sucesso>true</ns2:sucesso><ns2:mensagem>OK</ns2:mensagem><ns2:processo>
+          <ns3:dadosBasicos numero="${numero}" classeProcessual="7"><ns3:assunto><ns3:assuntoLocal codigoAssunto="1" descricao="Dano Moral"/></ns3:assunto>
+          <ns3:orgaoJulgador nomeOrgao="3ª Vara Cível de Belo Horizonte" codigoOrgao="1"/></ns3:dadosBasicos>${xmlMovs}</ns2:processo></ns1:consultarProcessoResposta>`),
+      );
+    }
+    if (op === 'consultarAvisosPendentes') {
+      const avisos = u.host.startsWith('eproc1g') ? mni.avisos : [];
+      const xml = avisos
+        .map(([id, numero, tipo, data]) => `<ns2:aviso idAviso="${id}" tipoComunicacao="${tipo}"><ns3:destinatario/><ns3:processo numero="${numero}"/><ns3:dataDisponibilizacao>${data}</ns3:dataDisponibilizacao></ns2:aviso>`)
+        .join('');
+      return xmlResposta(soap(`<ns1:consultarAvisosPendentesResposta><ns2:sucesso>true</ns2:sucesso><ns2:mensagem>OK</ns2:mensagem>${xml}</ns1:consultarAvisosPendentesResposta>`));
+    }
+  }
+  return fetchComPje(url, init);
+};
+
+test('eproc MNI: lê movimentações, avisa novidades e não consulta o DataJud', async () => {
+  const { verificarProcesso } = await import('../server/monitor.js');
+  const antigo = { u: process.env.EPROC_USUARIO, s: process.env.EPROC_SENHA };
+  process.env.EPROC_USUARIO = 'usuario-teste';
+  process.env.EPROC_SENHA = 'senha-teste';
+  try {
+    await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+    const NUM_EP = gerarCnj(7777777, '2026', '8', '13', '0024');
+    djen.porProcesso[NUM_EP] = [];
+    pjeTjmg.processos = {};
+    pjeTjmg.chamadasDataJud = [];
+    mni.processos = { [NUM_EP]: [['20261120100000', 'Distribuído por sorteio', 'm1'], ['20261121110000', 'Conclusos para decisão', 'm2']] };
+    mni.operacoes = [];
+    let p = await db.get('INSERT INTO processos (numero, titulo) VALUES (?, ?) RETURNING *', NUM_EP, 'Caso eproc');
+    const avisos0 = await db.valor('SELECT COUNT(*)::int FROM notificacoes');
+
+    await verificarProcesso(db, p, { fetchFn: fetchComEproc });
+    p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+    assert.equal(p.pje_situacao, 'ausente');
+    assert.equal(p.eproc_situacao, 'ativo');
+    assert.equal(p.orgao, '3ª Vara Cível de Belo Horizonte');
+    assert.equal(p.assunto, 'Dano Moral');
+    assert.equal(await db.valor("SELECT COUNT(*)::int FROM andamentos WHERE processo_id = ? AND fonte = 'eproc' AND lida = 1", p.id), 2, 'linha de base');
+    assert.deepEqual(pjeTjmg.chamadasDataJud, [], 'com o eproc funcionando, o DataJud não é consultado');
+    assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisos0);
+    const and = await db.get("SELECT data FROM andamentos WHERE processo_id = ? AND nome = 'Conclusos para decisão'", p.id);
+    assert.equal(and.data, '2026-11-21T14:00:00.000Z', 'data do MNI em horário de Brasília');
+
+    mni.processos[NUM_EP].push(['20261125153000', 'Decisão interlocutória', 'm3']);
+    const r = await verificarProcesso(db, p, { fetchFn: fetchComEproc });
+    assert.equal(r.andamentos, 1);
+    assert.ok(await db.get("SELECT 1 FROM notificacoes WHERE titulo LIKE '1 novo(s) andamento(s) — Caso eproc'"));
+    assert.ok(mni.operacoes.every((o) => o.endsWith('consultarProcesso')));
+
+    // Login errado: erro claro e volta para o DataJud.
+    mni.loginOk = false;
+    p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+    const r2 = await verificarProcesso(db, p, { fetchFn: fetchComEproc });
+    assert.ok(r2.erros.some((e) => /Usuário ou senha inválidos/.test(e)));
+    assert.deepEqual(pjeTjmg.chamadasDataJud, [NUM_EP]);
+    mni.loginOk = true;
+    await db.run('DELETE FROM processos WHERE id = ?', p.id);
+  } finally {
+    if (antigo.u === undefined) delete process.env.EPROC_USUARIO; else process.env.EPROC_USUARIO = antigo.u;
+    if (antigo.s === undefined) delete process.env.EPROC_SENHA; else process.env.EPROC_SENHA = antigo.s;
+  }
+});
+
+test('eproc MNI: intimações pendentes — linha de base, aviso das novas e limpeza das já abertas', async () => {
+  const { verificarAvisosEproc } = await import('../server/monitor.js');
+  const env = { EPROC_USUARIO: 'usuario-teste', EPROC_SENHA: 'senha-teste' };
+  await db.run("DELETE FROM config WHERE chave = 'eproc_avisos_em'");
+  await db.run('DELETE FROM avisos_eproc');
+  mni.avisos = [['a1', gerarCnj(8888888, '2026', '8', '13', '0024'), 'I', '20261124090000']];
+  mni.operacoes = [];
+  const avisos0 = await db.valor('SELECT COUNT(*)::int FROM notificacoes');
+
+  const r1 = await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env });
+  assert.equal(r1.linhaDeBase, true);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM notificacoes'), avisos0, 'pendências antigas não geram aviso');
+  assert.equal((await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env })).ignorado, true, 'respeita o intervalo de 1 h');
+
+  mni.avisos.push(['a2', gerarCnj(9999999, '2026', '8', '13', '0024'), 'C', '20261125100000']);
+  const r2 = await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env, forcar: true });
+  assert.equal(r2.novos, 1);
+  assert.ok(await db.get("SELECT 1 FROM notificacoes WHERE titulo LIKE 'Citação pendente no eproc%'"));
+  assert.ok(mni.operacoes.every((o) => o.endsWith('consultarAvisosPendentes')), 'só lista, nunca abre o teor');
+
+  mni.avisos = mni.avisos.slice(1); // a1 foi aberta no eproc
+  await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env, forcar: true });
+  assert.deepEqual((await db.all('SELECT id FROM avisos_eproc ORDER BY id')).map((x) => x.id), ['1|a2']);
+});
+
+test('eproc MNI: decodifica respostas em UTF-8 e em ISO-8859-1', async () => {
+  const { decodificar } = await import('../server/eproc_mni.js');
+  const xml = (enc) => `<?xml version="1.0" encoding="${enc}"?><a>Órgão Cível</a>`;
+  assert.match(decodificar(Buffer.from(xml('UTF-8'), 'utf8')), /Órgão Cível/);
+  assert.match(decodificar(Buffer.from(xml('ISO-8859-1'), 'latin1')), /Órgão Cível/);
+  assert.match(decodificar(Buffer.from('<a>Órgão</a>', 'latin1'), 'text/xml; charset=ISO-8859-1'), /Órgão/);
 });

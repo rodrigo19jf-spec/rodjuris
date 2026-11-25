@@ -6,8 +6,9 @@ import { getConfig, setConfig, agoraIso } from './db.js';
 import { cnjValido, siglaTribunal, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, testarConexoes } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
+import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
-import { executarCiclo, verificarProcesso, verificarTudo } from './monitor.js';
+import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const COOKIE = 'jurify_sessao';
@@ -264,7 +265,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const db = req.db;
       const agora = agoraIso();
       const em7 = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima] = await Promise.all([
+      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc] = await Promise.all([
         db.valor("SELECT COUNT(*)::int FROM processos WHERE status = 'ativo'"),
         db.valor("SELECT COUNT(*)::int FROM processos WHERE monitorar = 1 AND status <> 'encerrado'"),
         db.valor('SELECT COUNT(*)::int FROM publicacoes WHERE lida = 0'),
@@ -282,6 +283,11 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
            WHERE pu.lida = 0 ORDER BY pu.data_disponibilizacao DESC, pu.id DESC LIMIT 10`,
         ),
         getConfig(db, 'ultima_verificacao_geral'),
+        db.all(
+          `SELECT a.*, p.id AS processo_id, p.titulo AS processo_titulo
+           FROM avisos_eproc a LEFT JOIN processos p ON p.numero = a.numero_processo
+           ORDER BY a.disponibilizado_em DESC NULLS LAST LIMIT 30`,
+        ),
       ]);
       res.json({
         processosAtivos: ativos,
@@ -292,6 +298,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         proximos,
         publicacoes,
         ultimaVerificacao: ultima,
+        avisosEproc,
       });
     }),
   );
@@ -363,6 +370,14 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           if (pje) return res.json({ ...pje, fonte: 'PJe TJMG', movimentos: pje.movimentos.slice(0, 5) });
         } catch (err) {
           console.warn('[pje-tjmg]', err.message);
+        }
+      }
+      if (eprocDisponivel(numero)) {
+        try {
+          const ep = await buscarProcessoEproc(numero, { fetchFn });
+          if (ep) return res.json({ ...ep, fonte: 'eproc TJMG', movimentos: ep.movimentos.slice(0, 5) });
+        } catch (err) {
+          console.warn('[eproc]', err.message);
         }
       }
       try {
@@ -669,6 +684,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.ultimo_ciclo = await getConfig(req.db, 'ultimo_ciclo');
       out.serverless = SERVERLESS;
       out.agendador_configurado = !!process.env.CRON_SECRET;
+      out.eproc_configurado = !!(process.env.EPROC_USUARIO && process.env.EPROC_SENHA);
       res.json(out);
     }),
   );
@@ -723,7 +739,8 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           }
         })(),
       ]);
-      res.json(pje ? [...cnj, pje] : cnj);
+      const eproc = process.env.EPROC_TJMG === '0' ? null : await testarEproc({ fetchFn });
+      res.json([...cnj, ...(pje ? [pje] : []), ...(eproc ? [eproc] : [])]);
     }),
   );
 
@@ -732,6 +749,11 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       const r = await verificarTudo(req.db, { fetchFn, prazoMs: PRAZO_MS, pausaMs: SERVERLESS ? 300 : 1500 });
       if (r.emAndamento) return erro(res, 409, 'Já existe uma verificação em andamento.');
+      try {
+        r.avisosEproc = (await verificarAvisosEproc(req.db, { fetchFn, forcar: true })).novos;
+      } catch (e) {
+        r.erros.push(`eproc (avisos): ${e.message}`);
+      }
       res.json(r);
     }),
   );

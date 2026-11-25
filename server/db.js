@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS processos (
   pje_situacao TEXT,                       -- PJe TJMG: null (não verificado), 'ativo', 'ausente', 'migrado'
   pje_em TEXT,                             -- primeira leitura bem-sucedida no PJe (linha de base)
   pje_verificado_em TEXT,
+  eproc_situacao TEXT,                     -- eproc TJMG (MNI): null, 'ativo', 'ausente'
+  eproc_em TEXT,                           -- primeira leitura bem-sucedida no eproc (linha de base)
+  eproc_verificado_em TEXT,
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
   atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
@@ -69,6 +72,14 @@ CREATE TABLE IF NOT EXISTS andamentos (
   UNIQUE (processo_id, external_key)
 );
 CREATE INDEX IF NOT EXISTS ix_andamentos_processo ON andamentos(processo_id, data DESC);
+
+CREATE TABLE IF NOT EXISTS avisos_eproc (
+  id TEXT PRIMARY KEY,                     -- "<grau>|<idAviso>"
+  numero_processo TEXT,
+  tipo TEXT,
+  disponibilizado_em TEXT,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);
 
 CREATE TABLE IF NOT EXISTS lembretes (
   id SERIAL PRIMARY KEY,
@@ -123,6 +134,12 @@ const MIGRACOES = [
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS pje_verificado_em TEXT;
    ALTER TABLE andamentos ADD COLUMN IF NOT EXISTS fonte TEXT;
    UPDATE andamentos SET fonte = 'datajud' WHERE fonte IS NULL;`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS eproc_situacao TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS eproc_em TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS eproc_verificado_em TEXT;
+   CREATE TABLE IF NOT EXISTS avisos_eproc (
+     id TEXT PRIMARY KEY, numero_processo TEXT, tipo TEXT, disponibilizado_em TEXT,
+     criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

@@ -378,6 +378,14 @@ async function telaPainel(c) {
       <a class="card stat ${d.lembretesAtrasados ? 'alerta' : ''}" href="#/lembretes"><div class="valor">${d.lembretesAtrasados}</div><div class="rotulo">Lembretes atrasados</div></a>
     </div>
     <p class="small muted" style="margin-top:.75rem">Última verificação automática: ${d.ultimaVerificacao ? `${fmtDataHora(d.ultimaVerificacao)} (${relativo(d.ultimaVerificacao)})` : 'ainda não realizada'}${d.andamentosNaoLidos ? ` · <a href="#/processos">${d.andamentosNaoLidos} andamento(s) novo(s)</a>` : ''}</p>
+    ${d.avisosEproc?.length ? `<section class="card" style="margin-top:1rem;border-color:var(--warn)">
+      <div class="secao-titulo" style="margin-top:0"><h2>⚖️ Intimações pendentes no eproc (${d.avisosEproc.length})</h2>
+        <a class="btn pequeno" href="https://eproc1g.tjmg.jus.br/eproc/" target="_blank" rel="noopener">Abrir o eproc</a></div>
+      <p class="small muted" style="margin-top:0">O RodJuris só lista: a ciência é registrada quando você abre a comunicação no eproc.</p>
+      <ul class="lista">${d.avisosEproc.map((a) => `<li class="small"><strong>${esc({ I: 'Intimação', C: 'Citação', N: 'Notificação', V: 'Vista' }[a.tipo] || 'Comunicação')}</strong> ·
+        ${a.processo_id ? `<a href="#/processos/${a.processo_id}">${esc(a.processo_titulo || formatarCnj(a.numero_processo))}</a>` : `<span class="mono">${esc(formatarCnj(a.numero_processo))}</span> <button class="btn pequeno cadastrar-de-pub" data-numero="${esc(a.numero_processo)}">Cadastrar</button>`}
+        ${a.disponibilizado_em ? `<span class="muted"> · ${fmtDataHora(a.disponibilizado_em)}</span>` : ''}</li>`).join('')}</ul>
+    </section>` : ''}
     <div class="grade grade-2">
       <section>
         <div class="secao-titulo"><h2>Próximos 7 dias</h2><button class="btn pequeno" id="novo-lembrete">${icone('mais')} Lembrete</button></div>
@@ -393,6 +401,7 @@ async function telaPainel(c) {
       </section>
     </div>`;
   ligarLembretes(c, d.proximos, () => telaPainel(c));
+  $$('.cadastrar-de-pub', c).forEach((b) => b.addEventListener('click', () => formProcesso({ numero: b.dataset.numero })));
   $('#novo-lembrete').onclick = () => formLembrete(null, () => telaPainel(c));
   $('#verificar-agora').onclick = (e) => verificarAgora(e.currentTarget, () => telaPainel(c));
 }
@@ -402,7 +411,7 @@ async function verificarAgora(botao, depois) {
   toast('Consultando DJEN e DataJud… isso pode levar alguns minutos.');
   try {
     const r = await api('/verificar-agora', { metodo: 'POST' });
-    toast(`${r.processos} processo(s) verificados: ${r.publicacoes} publicação(ões) e ${r.andamentos} andamento(s) novos.${r.erros.length ? ` ${r.erros.length} erro(s).` : ''}${r.pendentes ? ` Faltam ${r.pendentes} — clique de novo para continuar.` : ''}`);
+    toast(`${r.processos} processo(s) verificados: ${r.publicacoes} publicação(ões) e ${r.andamentos} andamento(s) novos${r.avisosEproc ? `, ${r.avisosEproc} intimação(ões) nova(s) no eproc` : ''}.${r.erros.length ? ` ${r.erros.length} erro(s).` : ''}${r.pendentes ? ` Faltam ${r.pendentes} — clique de novo para continuar.` : ''}`);
     atualizarContadores();
     depois?.();
   } catch (err) {
@@ -452,8 +461,9 @@ async function telaProcessos(c) {
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
-          ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
+          ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
           ${p.pje_situacao === 'ativo' ? '<span class="badge ok">PJe TJMG</span>' : ''}
+          ${p.eproc_situacao === 'ativo' ? '<span class="badge ok">eproc</span>' : ''}
         </div>
         ${p.cliente && p.titulo ? `<div class="small muted" style="margin-top:.35rem">Cliente: ${esc(p.cliente)}</div>` : ''}
         ${p.proximo_lembrete ? `<div class="small" style="margin-top:.25rem">Próximo compromisso: ${fmtDataHora(p.proximo_lembrete)}</div>` : ''}
@@ -569,7 +579,8 @@ async function telaProcesso(c, id, abaInicial) {
             <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
             ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
             ${p.pje_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos direto da Consulta Pública do PJe do TJMG">Andamentos via PJe TJMG</span>' : ''}
-            ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe; andamentos via DataJud">Migrado para o eproc</span>' : ''}
+            ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe">Migrado para o eproc</span>' : ''}
+            ${p.eproc_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos pelo webservice oficial do eproc (MNI)">Andamentos via eproc</span>' : ''}
           </div></div>
         <div class="acoes"><button class="btn pequeno" id="editar">Editar</button><button class="btn pequeno perigo" id="excluir">Excluir</button></div>
       </div>
@@ -581,7 +592,7 @@ async function telaProcesso(c, id, abaInicial) {
       <label class="check small" style="margin-top:.75rem"><input type="checkbox" id="monitorar" ${p.monitorar ? 'checked' : ''}> Monitorar e me avisar sobre novas publicações e andamentos</label>
       <p class="small muted" style="margin:.5rem 0 0">Última verificação: ${p.ultima_verificacao ? fmtDataHora(p.ultima_verificacao) : 'pendente'}</p>
       ${p.erro_verificacao ? `<div class="alerta-caixa erro small" style="margin-top:.5rem">${esc(p.erro_verificacao)}</div>` : ''}
-      ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
+      ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
     </div>
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
@@ -602,7 +613,7 @@ async function telaProcesso(c, id, abaInicial) {
       alvo.innerHTML = p.andamentos.length
         ? `<div class="card"><ul class="lista">${p.andamentos.map((a) => `
             <li class="${a.lida ? '' : 'nao-lida'}"><div class="small muted">${fmtDataHora(a.data)}</div>
-            <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'} <span class="badge" style="font-weight:500">${a.fonte === 'pje' ? 'PJe TJMG' : 'DataJud'}</span></div>
+            <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'} <span class="badge" style="font-weight:500">${{ pje: 'PJe TJMG', eproc: 'eproc TJMG' }[a.fonte] || 'DataJud'}</span></div>
             ${a.complemento ? `<div class="small muted">${esc(a.complemento)}</div>` : ''}</li>`).join('')}</ul></div>`
         : `<div class="card vazio">${p.datajud_em ? 'Nenhum andamento encontrado no DataJud.' : 'Ainda não foi possível consultar o DataJud (CNJ). Os andamentos aparecerão aqui assim que ele responder.'}</div>`;
     } else {
@@ -873,9 +884,10 @@ async function telaConfig(c) {
             : `<span class="badge aviso">sem execuções recentes</span> <span class="muted">${cfg.ultimo_ciclo ? '(última ' + relativo(cfg.ultimo_ciclo) + ')' : ''} — confira o cron-job.org.</span>`
           }</p>` : ''}
         </form>
+        <p class="small" style="margin:.5rem 0 0">eproc TJMG (login de advogado): ${cfg.eproc_configurado ? '<span class="badge ok">configurado</span>' : '<span class="badge">não configurado</span> <span class="muted">— defina EPROC_USUARIO e EPROC_SENHA na Vercel (veja o README).</span>'}</p>
         <hr style="border:0;border-top:1px solid var(--border);margin:1rem 0">
-        <p class="small" style="margin-bottom:.5rem"><strong>Conexão com o CNJ</strong></p>
-        <button type="button" class="btn" id="testar-cnj">Testar conexão com o CNJ</button>
+        <p class="small" style="margin-bottom:.5rem"><strong>Conexão com o CNJ e tribunais</strong></p>
+        <button type="button" class="btn" id="testar-cnj">Testar conexões</button>
         <ul class="lista small" id="resultado-cnj" style="margin-top:.5rem"></ul>
       </section>
 

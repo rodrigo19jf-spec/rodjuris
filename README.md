@@ -63,6 +63,25 @@ Os dados ficam na pasta `dados/pg`. Faça backup dessa pasta.
 
 Sem `POSTGRES_URL`/`DATABASE_URL`, o app usa um Postgres embutido (PGlite) gravado em `./dados/pg`. É o modo usado no computador local e em VPS.
 
+### eproc do TJMG (opcional, recomendado para quem tem processos no eproc)
+
+Com o seu login de advogado, o RodJuris usa o **webservice oficial do eproc (MNI 2.2.2)** para:
+- ler as **movimentações** dos processos do eproc direto do tribunal, sem depender do DataJud;
+- listar, de hora em hora, as **intimações e citações pendentes** e avisar as novas.
+
+Para ativar, na Vercel (Settings → Environment Variables), crie:
+- `EPROC_USUARIO`: o seu usuário de login no eproc do TJMG;
+- `EPROC_SENHA`: a sua senha do eproc.
+
+Depois, faça o **Redeploy** e confira em **Ajustes → Testar conexões**.
+
+> **Segurança e prazos**
+> - As credenciais ficam só nas variáveis secretas da Vercel. Nunca vão para o banco, o código ou o GitHub.
+> - O app usa apenas operações de **leitura** (`consultarProcesso` sem documentos e `consultarAvisosPendentes`).
+> - Ele **nunca** usa `consultarTeorComunicacao`, que registraria a ciência da intimação. A ciência só acontece quando você abre a comunicação no eproc.
+
+Para desligar: `EPROC_TJMG=0`. A leitura da Consulta Pública do PJe do TJMG pode ser desligada com `PJE_TJMG=0`.
+
 ## Alternativa: servidor próprio (VPS no Brasil)
 
 > **Importante:** o DJEN só aceita acessos de servidores **no Brasil**. Serviços como Railway, Render e Heroku ficam no exterior e não funcionam para as publicações.
@@ -115,6 +134,7 @@ api/index.js      ponto de entrada na Vercel (todas as rotas /api)
   db.js           banco PostgreSQL (Supabase/Neon na Vercel; PGlite embutido no modo local)
   cnj.js          número CNJ: validação, formatação, tribunal
   pje_tjmg.js     leitura da Consulta Pública do PJe do TJMG (desligue com PJE_TJMG=0)
+  eproc_mni.js    webservice oficial do eproc do TJMG (MNI 2.2.2), só leitura
   fontes.js       clientes DJEN (Comunica PJe) e DataJud
   monitor.js      verificação de publicações, andamentos e lembretes
   notificador.js  avisos no app, e-mail (nodemailer) e push (web-push)

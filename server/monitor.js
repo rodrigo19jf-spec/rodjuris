@@ -2,6 +2,7 @@ import { agoraIso, getConfig, setConfig } from './db.js';
 import { formatarCnj, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, buscarPublicacoesDjen } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
+import { buscarProcessoEproc, eprocDisponivel, listarAvisosPendentesEproc } from './eproc_mni.js';
 import { formatarDataHora, notificar } from './notificador.js';
 
 const DIA = 86_400_000;
@@ -108,6 +109,11 @@ function deveConsultarPje(processo) {
   return true;
 }
 
+function deveConsultarEproc(processo) {
+  if (processo.eproc_situacao !== 'ausente') return true;
+  return !processo.eproc_verificado_em || Date.now() - new Date(processo.eproc_verificado_em).getTime() > DIAS_RECHECAR_PJE_AUSENTE * DIA;
+}
+
 async function preencherCadastro(db, processoId, dados) {
   await db.run(
     `UPDATE processos SET
@@ -133,7 +139,7 @@ async function preencherCadastro(db, processoId, dados) {
 export async function verificarProcesso(
   db,
   processo,
-  { fetchFn = fetch, avisar = true, djen: usarDjen = true, datajud: usarDatajud = true, pje: usarPje = true } = {},
+  { fetchFn = fetch, avisar = true, djen: usarDjen = true, datajud: usarDatajud = true, pje: usarPje = true, eproc: usarEproc = true } = {},
 ) {
   const linhaDeBase = !processo.ultima_verificacao; // publicações
   const desde = linhaDeBase
@@ -180,9 +186,35 @@ export async function verificarProcesso(
     }
   }
 
-  // 2) DataJud, só se o processo não estiver sendo acompanhado pelo PJe.
+  // 2) eproc do TJMG pelo webservice oficial (MNI), com o login do advogado.
+  let eprocAtivo = false;
+  if (!pjeAtivo && usarEproc && eprocDisponivel(processo.numero) && deveConsultarEproc(processo)) {
+    try {
+      const ep = await buscarProcessoEproc(processo.numero, { fetchFn });
+      if (!ep) {
+        await db.run("UPDATE processos SET eproc_situacao = 'ausente', eproc_verificado_em = ? WHERE id = ?", agora, processo.id);
+      } else {
+        const baseDoEproc = !processo.eproc_em;
+        const novos = await gravarAndamentos(db, processo.id, ep.movimentos, { linhaDeBase: baseDoEproc, fonte: 'eproc' });
+        if (!baseDoEproc) avisosAndamentos.push(...novos);
+        await preencherCadastro(db, processo.id, ep);
+        await db.run(
+          "UPDATE processos SET eproc_situacao = 'ativo', eproc_em = COALESCE(eproc_em, ?), eproc_verificado_em = ? WHERE id = ?",
+          agora,
+          agora,
+          processo.id,
+        );
+        eprocAtivo = true;
+      }
+    } catch (e) {
+      if (!e?.temporario) erros.push(e?.message || String(e));
+      eprocAtivo = processo.eproc_situacao === 'ativo' && !!e?.temporario; // instabilidade: não cai para o DataJud
+    }
+  }
+
+  // 3) DataJud, só se o processo não estiver sendo acompanhado pelo PJe nem pelo eproc.
   let datajudPendente = Number(processo.datajud_pendente || 0);
-  if (usarDatajud && pjeAtivo) {
+  if (usarDatajud && (pjeAtivo || eprocAtivo)) {
     datajudPendente = 0;
     await db.run('UPDATE processos SET datajud_pendente = 0 WHERE id = ?', processo.id);
   } else if (usarDatajud) {
@@ -211,7 +243,7 @@ export async function verificarProcesso(
     await db.run('UPDATE processos SET datajud_pendente = ?, datajud_tentativa = ? WHERE id = ?', datajudPendente, agora, processo.id);
   }
 
-  // 3) Publicações do DJEN.
+  // 4) Publicações do DJEN.
   let novasPubs = [];
   if (promessaDjen) {
     const r = await promessaDjen;
@@ -267,6 +299,7 @@ export async function verificarProcesso(
     linhaDeBase,
     datajudPendente: !!datajudPendente,
     pje: pjeAtivo,
+    eproc: eprocAtivo,
   };
 }
 
@@ -284,7 +317,7 @@ export async function retentarDataJud(db, { fetchFn = fetch, prazoMs = Infinity,
   );
   for (const p of lista) {
     if (Date.now() - inicio > prazoMs) break;
-    const v = await verificarProcesso(db, p, { fetchFn, djen: false, pje: false });
+    const v = await verificarProcesso(db, p, { fetchFn, djen: false, pje: false, eproc: false });
     r.processos++;
     r.andamentos += v.andamentos;
     if (v.datajudPendente) break; // continua instável: tenta de novo no próximo ciclo
@@ -406,6 +439,53 @@ export async function verificarLembretes(db, agora = new Date()) {
   return disparados;
 }
 
+const MINUTOS_AVISOS_EPROC = 60;
+
+/**
+ * Lista as intimações/citações pendentes no eproc (MNI) e avisa as novas.
+ * Só LISTA: não abre o teor, então não registra ciência nem inicia prazo.
+ */
+export async function verificarAvisosEproc(db, { fetchFn = fetch, forcar = false, env = process.env } = {}) {
+  if (env.EPROC_TJMG === '0' || !env.EPROC_USUARIO || !env.EPROC_SENHA) return { ignorado: true, novos: 0 };
+  const ultima = await getConfig(db, 'eproc_avisos_em');
+  if (!forcar && ultima && Date.now() - new Date(ultima).getTime() < MINUTOS_AVISOS_EPROC * 60_000) return { ignorado: true, novos: 0 };
+  const avisos = await listarAvisosPendentesEproc({ fetchFn, env });
+  const linhaDeBase = !ultima;
+  const novos = [];
+  for (const a of avisos) {
+    const r = await db.run(
+      'INSERT INTO avisos_eproc (id, numero_processo, tipo, disponibilizado_em) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING',
+      a.id,
+      a.numero_processo,
+      a.tipo,
+      a.disponibilizado_em,
+    );
+    if (r.rowCount > 0) novos.push(a);
+  }
+  // Os que não estão mais pendentes (você já abriu no eproc) saem da lista.
+  const atuais = new Set(avisos.map((a) => a.id));
+  for (const { id } of await db.all('SELECT id FROM avisos_eproc')) {
+    if (!atuais.has(id)) await db.run('DELETE FROM avisos_eproc WHERE id = ?', id);
+  }
+  await setConfig(db, 'eproc_avisos_em', agoraIso());
+
+  if (!linhaDeBase) {
+    for (const a of novos) {
+      const proc = await db.get('SELECT id, titulo, cliente FROM processos WHERE numero = ?', a.numero_processo);
+      const nome = proc ? proc.titulo || proc.cliente || formatarCnj(a.numero_processo) : formatarCnj(a.numero_processo);
+      const tipo = { I: 'Intimação', C: 'Citação', N: 'Notificação', V: 'Vista' }[a.tipo] || 'Comunicação';
+      await notificar(db, {
+        tipo: 'publicacao',
+        titulo: `${tipo} pendente no eproc — ${nome}`,
+        mensagem: `${formatarCnj(a.numero_processo)}${a.disponibilizado_em ? ` · disponibilizada em ${formatarDataHora(a.disponibilizado_em)}` : ''}. Abra no eproc para tomar ciência.`,
+        link: proc ? `/#/processos/${proc.id}` : '/#/',
+        emailTexto: `Há uma nova ${tipo.toLowerCase()} pendente no eproc (TJMG).\n\nProcesso: ${formatarCnj(a.numero_processo)} (${nome})${a.disponibilizado_em ? `\nDisponibilizada em: ${formatarDataHora(a.disponibilizado_em)}` : ''}\n\nO RodJuris apenas avisa: a ciência só é registrada quando você abrir a comunicação no eproc.`,
+      });
+    }
+  }
+  return { novos: linhaDeBase ? 0 : novos.length, pendentes: avisos.length, linhaDeBase };
+}
+
 /**
  * Um "ciclo" do agendador: lembretes + monitoramento do que estiver vencido.
  * Chamado pelo cron-job.org (Vercel) ou pelo relógio interno (servidor comum).
@@ -414,7 +494,20 @@ export async function executarCiclo(db, { fetchFn = fetch, prazoMs = Infinity, p
   const inicio = Date.now();
   const lembretes = await verificarLembretes(db);
   const monitor = await verificarTudo(db, { fetchFn, forcar: false, prazoMs, pausaMs });
+  let avisosEproc = { novos: 0 };
+  try {
+    avisosEproc = await verificarAvisosEproc(db, { fetchFn });
+  } catch (e) {
+    console.warn('[eproc avisos]', e.message);
+    avisosEproc = { novos: 0, erro: e.message };
+  }
   const retentativa = monitor.emAndamento ? { processos: 0, andamentos: 0 } : await retentarDataJud(db, { fetchFn, prazoMs, inicio });
   await setConfig(db, 'ultimo_ciclo', agoraIso());
-  return { lembretes, ...monitor, datajudRetentativas: retentativa.processos, andamentos: (monitor.andamentos || 0) + retentativa.andamentos };
+  return {
+    lembretes,
+    ...monitor,
+    avisosEproc: avisosEproc.novos,
+    datajudRetentativas: retentativa.processos,
+    andamentos: (monitor.andamentos || 0) + retentativa.andamentos,
+  };
 }
