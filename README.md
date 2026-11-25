@@ -14,6 +14,12 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
   - cada registro tem data, hora (opcional), tipo (envio a setor, solicitação/ofício, cumprimento de decisão, audiência, reunião, petição, outro) e descrição;
   - há um lembrete opcional na data (ex.: audiências);
   - os registros podem ser editados e excluídos.
+- **Anotações gerais** (menu "Anotações"), para processos que você não precisa acompanhar:
+  - cada anotação tem título, nº do processo e nº SEI (opcionais), etiquetas e texto livre;
+  - busca por qualquer palavra e filtro por etiqueta;
+  - dá para fixar as mais importantes no topo;
+  - não há monitoramento nem avisos;
+  - o botão "Passar a acompanhar" transforma a anotação em processo monitorado.
 - **Audiência agendada** no cadastro do processo:
   - campos de data, hora e tipo/local/link;
   - aviso automático com a antecedência escolhida (1 h a 1 semana);

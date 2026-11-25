@@ -237,6 +237,7 @@ const ICONES = {
   publicacoes: '<path d="M4 5h13a2 2 0 0 1 2 2v12a2 2 0 0 0 2-2V8M4 5v13a2 2 0 0 0 2 2h13M8 9h7M8 13h7M8 17h4"/>',
   agenda: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   lembretes: '<path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zM18 16V11a6 6 0 1 0-12 0v5l-2 2h16z"/>',
+  anotacoes: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
   config: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   sino: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
   atualizar: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
@@ -334,12 +335,14 @@ function telaLogin(configurado) {
 
 // ───────────── estrutura ─────────────
 const MENU = [
-  ['#/', 'painel', 'Painel'],
-  ['#/processos', 'processos', 'Processos'],
-  ['#/publicacoes', 'publicacoes', 'Publicações'],
-  ['#/agenda', 'agenda', 'Agenda'],
-  ['#/lembretes', 'lembretes', 'Lembretes'],
-  ['#/config', 'config', 'Ajustes'],
+  // [endereço, ícone, nome, nome curto (menu inferior do celular)]
+  ['#/', 'painel', 'Painel', 'Painel'],
+  ['#/processos', 'processos', 'Processos', 'Processos'],
+  ['#/publicacoes', 'publicacoes', 'Publicações', 'Publ.'],
+  ['#/agenda', 'agenda', 'Agenda', 'Agenda'],
+  ['#/lembretes', 'lembretes', 'Lembretes', 'Lembr.'],
+  ['#/anotacoes', 'anotacoes', 'Anotações', 'Notas'],
+  ['#/config', 'config', 'Ajustes', 'Ajustes'],
 ];
 
 function montarShell() {
@@ -347,7 +350,7 @@ function montarShell() {
     <div class="shell">
       <nav class="nav" aria-label="Menu principal">
         <div class="marca"><img src="/icons/icon.svg" alt="">RodJuris</div>
-        ${MENU.map(([href, ic, nome]) => `<a href="${href}" data-rota="${ic}">${icone(ic)}<span>${nome}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
+        ${MENU.map(([href, ic, nome, curto]) => `<a href="${href}" data-rota="${ic}" title="${nome}">${icone(ic)}<span class="rotulo-longo">${nome}</span><span class="rotulo-curto">${curto}</span>${ic === 'publicacoes' ? '<span class="contador" id="cont-pub" hidden></span>' : ''}</a>`).join('')}
       </nav>
       <div class="principal">
         <header class="topo">
@@ -430,6 +433,7 @@ async function rotear() {
     else if (raiz === 'publicacoes') await telaPublicacoes(c);
     else if (raiz === 'agenda') await telaAgenda(c);
     else if (raiz === 'lembretes') await telaLembretes(c);
+    else if (raiz === 'anotacoes') await telaAnotacoes(c);
     else if (raiz === 'config') await telaConfig(c);
     else c.innerHTML = '<p class="vazio">Página não encontrada.</p>';
   } catch (err) {
@@ -1047,6 +1051,160 @@ async function telaPublicacoes(c) {
     atualizarContadores();
     carregar();
   };
+  await carregar();
+}
+
+// ───────────── anotações gerais ─────────────
+function formAnotacao(n = null, aoSalvar, etiquetasExistentes = []) {
+  const editando = !!n?.id;
+  const base = n || {};
+  abrirModal(editando ? 'Editar anotação' : 'Nova anotação', `
+    <form id="form-nota">
+      <div class="campo"><label for="n-titulo">Título *</label><input id="n-titulo" required maxlength="300" placeholder="Ex.: Ação de cobrança – Fornecedor X" value="${esc(base.titulo || '')}"></div>
+      <div class="campos-2">
+        <div class="campo"><label for="n-numero">Nº do processo (opcional)</label><input id="n-numero" inputmode="numeric" placeholder="0000000-00.0000.0.00.0000" value="${esc(formatarCnj(base.numero_processo || ''))}"></div>
+        <div class="campo"><label for="n-sei">Nº SEI (opcional)</label><input id="n-sei" inputmode="numeric" placeholder="Ex.: 1320.01.0012345/2026-12" value="${esc(base.sei || '')}"></div>
+      </div>
+      <div class="campo"><label for="n-etiq">Etiquetas</label>
+        <input id="n-etiq" list="lista-etiquetas" placeholder="Separe por vírgula. Ex.: FHEMIG, licitação, arquivado" value="${esc(base.etiquetas || '')}">
+        <datalist id="lista-etiquetas">${etiquetasExistentes.map((e) => `<option value="${esc(e)}">`).join('')}</datalist></div>
+      <div class="campo"><label for="n-texto">Anotação</label><textarea id="n-texto" rows="8" maxlength="20000" placeholder="Observações, histórico, contatos, entendimento do caso…">${esc(base.texto || '')}</textarea></div>
+      <label class="check"><input type="checkbox" id="n-fixar" ${base.fixada ? 'checked' : ''}> 📌 Fixar no topo</label>
+      <div id="erro-nota" class="alerta-caixa erro" hidden style="margin-top:.75rem"></div>
+      <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
+    </form>`, {
+    aoAbrir: (m, fechar) => {
+      $('#form-nota', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const corpo = {
+          titulo: $('#n-titulo', m).value,
+          numero_processo: $('#n-numero', m).value,
+          sei: $('#n-sei', m).value,
+          etiquetas: $('#n-etiq', m).value,
+          texto: $('#n-texto', m).value,
+          fixada: $('#n-fixar', m).checked,
+        };
+        try {
+          await api(editando ? `/anotacoes/${base.id}` : '/anotacoes', { metodo: editando ? 'PUT' : 'POST', corpo });
+          fechar();
+          toast(editando ? 'Anotação atualizada.' : 'Anotação salva.');
+          aoSalvar?.();
+        } catch (err) {
+          const caixa = $('#erro-nota', m);
+          caixa.textContent = err.message;
+          caixa.hidden = false;
+        }
+      };
+    },
+  });
+}
+
+let filtroEtiqueta = '';
+async function telaAnotacoes(c) {
+  definirTopo('Anotações', { acoes: `<button class="btn primario" id="nova-nota">${icone('mais')}<span class="so-desktop">Nova anotação</span></button>` });
+  const todas = await api('/anotacoes');
+  const etiquetas = [...new Set(todas.flatMap((n) => (n.etiquetas || '').split(',').map((e) => e.trim()).filter(Boolean)))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  if (filtroEtiqueta && !etiquetas.includes(filtroEtiqueta)) filtroEtiqueta = '';
+  c.innerHTML = `
+    <p class="small muted" style="margin-top:0">Para guardar observações sobre processos que você <strong>não</strong> precisa acompanhar: aqui não há monitoramento de publicações nem avisos.</p>
+    <div class="filtros">
+      <input type="search" id="busca-nota" placeholder="Buscar no título, texto, número ou SEI…" aria-label="Buscar anotações">
+      ${etiquetas.length ? `<select id="filtro-etiqueta" aria-label="Etiqueta" style="width:auto">
+        <option value="">Todas as etiquetas</option>
+        ${etiquetas.map((e) => `<option value="${esc(e)}" ${filtroEtiqueta === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}
+      </select>` : ''}
+    </div>
+    <div id="lista-notas" class="grade grade-2"></div>`;
+  const recarregar = () => telaAnotacoes(c);
+  $('#nova-nota').onclick = () => formAnotacao(null, recarregar, etiquetas);
+
+  const carregar = async () => {
+    const q = $('#busca-nota').value.trim();
+    const lista = q || filtroEtiqueta ? await api(`/anotacoes?${new URLSearchParams({ q, etiqueta: filtroEtiqueta })}`) : todas;
+    const alvo = $('#lista-notas');
+    if (!lista.length) {
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || filtroEtiqueta ? 'Nenhuma anotação encontrada.' : 'Nenhuma anotação ainda.<br><br><button class="btn primario" id="primeira-nota">Criar minha primeira anotação</button>'}</div>`;
+      $('#primeira-nota')?.addEventListener('click', () => formAnotacao(null, recarregar, etiquetas));
+      return;
+    }
+    alvo.innerHTML = lista.map((n) => `
+      <article class="card nota">
+        <div class="topo-card">
+          <h3 style="margin:0">${n.fixada ? '📌 ' : ''}${esc(n.titulo)}</h3>
+        </div>
+        ${n.numero_processo || n.sei ? `<div class="small" style="margin-top:.35rem">
+          ${n.numero_processo ? `<span class="mono">${esc(formatarCnj(n.numero_processo))}</span> <button class="btn pequeno copiar" data-texto="${esc(formatarCnj(n.numero_processo))}">Copiar</button>` : ''}
+          ${n.sei ? `<div>SEI: <span class="mono">${esc(n.sei)}</span> <button class="btn pequeno copiar" data-texto="${esc(n.sei)}">Copiar</button></div>` : ''}
+        </div>` : ''}
+        ${n.etiquetas ? `<div class="acoes small" style="margin-top:.4rem">${n.etiquetas.split(',').map((e) => e.trim()).filter(Boolean).map((e) => `<button class="badge etiqueta" data-etiqueta="${esc(e)}" title="Filtrar por esta etiqueta">${esc(e)}</button>`).join('')}</div>` : ''}
+        ${n.texto ? `<div class="texto-publicacao ${n.texto.length > 280 ? 'recolhido' : ''}">${esc(n.texto)}</div>` : ''}
+        <div class="small muted" style="margin-top:.5rem">Atualizada em ${fmtDataHora(n.atualizado_em)}</div>
+        <div class="acoes" style="margin-top:.5rem">
+          ${n.texto && n.texto.length > 280 ? '<button class="btn pequeno expandir-nota">Ler tudo</button>' : ''}
+          <button class="btn pequeno editar-nota" data-id="${n.id}">Editar</button>
+          <button class="btn pequeno fixar-nota" data-id="${n.id}" data-fixada="${n.fixada ? 1 : 0}">${n.fixada ? 'Desafixar' : '📌 Fixar'}</button>
+          ${n.numero_processo ? `<button class="btn pequeno acompanhar-nota" data-id="${n.id}" title="Cadastrar em Processos e monitorar publicações">Passar a acompanhar</button>` : ''}
+          <button class="btn pequeno perigo excluir-nota" data-id="${n.id}">Excluir</button>
+        </div>
+      </article>`).join('');
+
+    const achar = (id) => lista.find((n) => String(n.id) === String(id));
+    $$('.expandir-nota', alvo).forEach((b) =>
+      b.addEventListener('click', () => {
+        const t = $('.texto-publicacao', b.closest('.nota'));
+        t.classList.toggle('recolhido');
+        b.textContent = t.classList.contains('recolhido') ? 'Ler tudo' : 'Recolher';
+      }),
+    );
+    $$('.copiar', alvo).forEach((b) =>
+      b.addEventListener('click', async () => {
+        await copiarTexto(b.dataset.texto);
+        toast('Copiado.');
+      }),
+    );
+    $$('.etiqueta', alvo).forEach((b) =>
+      b.addEventListener('click', () => {
+        filtroEtiqueta = b.dataset.etiqueta;
+        recarregar();
+      }),
+    );
+    $$('.editar-nota', alvo).forEach((b) => b.addEventListener('click', () => formAnotacao(achar(b.dataset.id), recarregar, etiquetas)));
+    $$('.fixar-nota', alvo).forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api(`/anotacoes/${b.dataset.id}`, { metodo: 'PUT', corpo: { fixada: b.dataset.fixada !== '1' } });
+        recarregar();
+      }),
+    );
+    $$('.excluir-nota', alvo).forEach((b) =>
+      b.addEventListener('click', async () => {
+        if (!(await confirmar('Excluir esta anotação?'))) return;
+        await api(`/anotacoes/${b.dataset.id}`, { metodo: 'DELETE' });
+        toast('Anotação excluída.');
+        recarregar();
+      }),
+    );
+    $$('.acompanhar-nota', alvo).forEach((b) =>
+      b.addEventListener('click', async () => {
+        if (!(await confirmar('Passar a acompanhar este processo? Ele será cadastrado em Processos (com monitoramento de publicações e andamentos) e o texto da anotação irá para as observações. A anotação sai desta lista.'))) return;
+        try {
+          const proc = await api(`/anotacoes/${b.dataset.id}/acompanhar`, { metodo: 'POST' });
+          toast('Processo cadastrado e monitorado.');
+          location.hash = `#/processos/${proc.id}`;
+        } catch (err) {
+          toast(err.message);
+        }
+      }),
+    );
+  };
+  let t;
+  $('#busca-nota').oninput = () => {
+    clearTimeout(t);
+    t = setTimeout(carregar, 250);
+  };
+  $('#filtro-etiqueta')?.addEventListener('change', (e) => {
+    filtroEtiqueta = e.target.value;
+    carregar();
+  });
   await carregar();
 }
 

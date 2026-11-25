@@ -897,6 +897,131 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     }),
   );
 
+  // ───────────── anotações gerais (sem monitoramento) ─────────────
+  function dadosAnotacao(body, atual = {}) {
+    const b = { ...atual, ...body };
+    const titulo = texto(b.titulo, 300);
+    if (!titulo) throw new Error('Informe um título.');
+    let numero = somenteDigitos(b.numero_processo);
+    if (numero && (numero.length !== 20 || !cnjValido(numero))) throw new Error('Número do processo inválido (padrão CNJ, 20 dígitos).');
+    const sei = texto(b.sei, 60);
+    if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
+    const etiquetas = [...new Set(String(b.etiquetas || '').split(',').map((e) => e.trim()).filter(Boolean))].slice(0, 15).join(', ');
+    return {
+      titulo,
+      numero_processo: numero || null,
+      sei,
+      etiquetas: etiquetas || null,
+      texto: texto(b.texto, 20000),
+      fixada: b.fixada === true || b.fixada === 1 ? 1 : 0,
+    };
+  }
+
+  app.get(
+    '/api/anotacoes',
+    a(async (req, res) => {
+      const where = [];
+      const params = [];
+      if (req.query.q) {
+        const q = `%${String(req.query.q).trim()}%`;
+        const qd = somenteDigitos(req.query.q);
+        where.push(
+          "(titulo ILIKE ? OR texto ILIKE ? OR etiquetas ILIKE ? OR numero_processo LIKE ? OR regexp_replace(COALESCE(sei, ''), '[^0-9]', '', 'g') LIKE ?)",
+        );
+        params.push(q, q, q, qd ? `%${qd}%` : '#', qd ? `%${qd}%` : '#');
+      }
+      if (req.query.etiqueta) {
+        where.push("(', ' || COALESCE(etiquetas, '') || ',') ILIKE ?");
+        params.push(`%, ${String(req.query.etiqueta).trim()},%`);
+      }
+      res.json(
+        await req.db.all(
+          `SELECT * FROM anotacoes ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+           ORDER BY fixada DESC, atualizado_em DESC LIMIT 500`,
+          ...params,
+        ),
+      );
+    }),
+  );
+
+  app.post(
+    '/api/anotacoes',
+    a(async (req, res) => {
+      let d;
+      try {
+        d = dadosAnotacao(req.body || {});
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const cols = Object.keys(d);
+      res.status(201).json(
+        await req.db.get(
+          `INSERT INTO anotacoes (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING *`,
+          ...cols.map((c) => d[c]),
+        ),
+      );
+    }),
+  );
+
+  app.put(
+    '/api/anotacoes/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const atual = id ? await req.db.get('SELECT * FROM anotacoes WHERE id = ?', id) : undefined;
+      if (!atual) return erro(res, 404, 'Anotação não encontrada.');
+      let d;
+      try {
+        d = dadosAnotacao(req.body || {}, atual);
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const cols = Object.keys(d);
+      res.json(
+        await req.db.get(
+          `UPDATE anotacoes SET ${cols.map((c) => `${c} = ?`).join(', ')}, atualizado_em = ? WHERE id = ? RETURNING *`,
+          ...cols.map((c) => d[c]),
+          agoraIso(),
+          id,
+        ),
+      );
+    }),
+  );
+
+  app.delete(
+    '/api/anotacoes/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const r = id ? await req.db.run('DELETE FROM anotacoes WHERE id = ?', id) : { rowCount: 0 };
+      if (!r.rowCount) return erro(res, 404, 'Anotação não encontrada.');
+      res.json({ ok: true });
+    }),
+  );
+
+  // Transforma a anotação em processo monitorado (o texto vai para as observações).
+  app.post(
+    '/api/anotacoes/:id/acompanhar',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const n = id ? await req.db.get('SELECT * FROM anotacoes WHERE id = ?', id) : undefined;
+      if (!n) return erro(res, 404, 'Anotação não encontrada.');
+      if (!n.numero_processo) return erro(res, 400, 'Informe o número do processo na anotação antes de passar a acompanhá-lo.');
+      const existente = await req.db.get('SELECT id FROM processos WHERE numero = ?', n.numero_processo);
+      if (existente) return erro(res, 409, 'Este processo já está cadastrado em Processos.');
+      const obs = [n.texto, n.etiquetas ? `Etiquetas: ${n.etiquetas}` : null].filter(Boolean).join('\n\n') || null;
+      const novo = await req.db.get(
+        `INSERT INTO processos (numero, titulo, sei, observacoes, tribunal, monitorar) VALUES (?, ?, ?, ?, ?, 1) RETURNING *`,
+        n.numero_processo,
+        n.titulo,
+        n.sei,
+        obs,
+        siglaTribunal(n.numero_processo),
+      );
+      await req.db.run('DELETE FROM anotacoes WHERE id = ?', n.id);
+      res.status(201).json(novo);
+      emSegundoPlano(verificarProcesso(req.db, novo, { fetchFn }));
+    }),
+  );
+
   // ───────────── avisos (sininho) ─────────────
   app.get(
     '/api/notificacoes',

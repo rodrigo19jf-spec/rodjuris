@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '8');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '9');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -986,4 +986,54 @@ test('datas e horas impossíveis são recusadas com mensagem (não derrubam o se
   } finally {
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
   }
+});
+
+test('anotações gerais: criar, buscar, etiquetas, fixar, validar e passar a acompanhar', async () => {
+  const NUM_N = gerarCnj(9595959, '2025', '8', '13', '0024');
+  const a1 = await req('/api/anotacoes', {
+    metodo: 'POST',
+    corpo: { titulo: 'Cobrança – Fornecedor X', numero_processo: formatarCnj(NUM_N), sei: '2270.01.0011111/2025-10', etiquetas: 'FHEMIG, licitação, FHEMIG', texto: 'Acordo homologado; aguardar pagamento.' },
+  });
+  assert.equal(a1.status, 201);
+  assert.equal(a1.corpo.numero_processo, NUM_N);
+  assert.equal(a1.corpo.etiquetas, 'FHEMIG, licitação', 'remove etiquetas repetidas');
+  const a2 = await req('/api/anotacoes', { metodo: 'POST', corpo: { titulo: 'Contato do setor jurídico', texto: 'Ramal 1234', etiquetas: 'contatos' } });
+  assert.equal(a2.status, 201);
+
+  assert.equal((await req('/api/anotacoes', { metodo: 'POST', corpo: { titulo: '' } })).status, 400);
+  assert.equal((await req('/api/anotacoes', { metodo: 'POST', corpo: { titulo: 'x', numero_processo: '123' } })).status, 400);
+
+  const busca = async (qs) => (await req(`/api/anotacoes?${qs}`)).corpo.map((n) => n.id);
+  assert.deepEqual(await busca('q=pagamento'), [a1.corpo.id]);
+  assert.deepEqual(await busca('q=0011111'), [a1.corpo.id], 'busca pelo SEI');
+  assert.deepEqual(await busca(`q=${NUM_N.slice(0, 7)}`), [a1.corpo.id], 'busca pelo número do processo');
+  assert.deepEqual(await busca('etiqueta=licitação'), [a1.corpo.id]);
+  assert.deepEqual(await busca('etiqueta=contatos'), [a2.corpo.id]);
+
+  // Fixar sobe para o topo.
+  await req(`/api/anotacoes/${a2.corpo.id}`, { metodo: 'PUT', corpo: { fixada: true } });
+  assert.equal((await req('/api/anotacoes')).corpo[0].id, a2.corpo.id);
+
+  // Sem número, não dá para acompanhar.
+  assert.equal((await req(`/api/anotacoes/${a2.corpo.id}/acompanhar`, { metodo: 'POST' })).status, 400);
+
+  // Passar a acompanhar: vira processo monitorado e sai das anotações.
+  djen.porProcesso[NUM_N] = [];
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const proc = await req(`/api/anotacoes/${a1.corpo.id}/acompanhar`, { metodo: 'POST' });
+    assert.equal(proc.status, 201);
+    assert.equal(proc.corpo.numero, NUM_N);
+    assert.equal(proc.corpo.monitorar, 1);
+    assert.equal(proc.corpo.sei, '2270.01.0011111/2025-10');
+    assert.match(proc.corpo.observacoes, /aguardar pagamento/);
+    assert.match(proc.corpo.observacoes, /Etiquetas: FHEMIG, licitação/);
+    assert.equal((await req(`/api/anotacoes/${a1.corpo.id}`, { metodo: 'DELETE' })).status, 404, 'a anotação saiu da lista');
+    await new Promise((r) => setTimeout(r, 100));
+    await req(`/api/processos/${proc.corpo.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+  assert.equal((await req(`/api/anotacoes/${a2.corpo.id}`, { metodo: 'DELETE' })).status, 200);
 });

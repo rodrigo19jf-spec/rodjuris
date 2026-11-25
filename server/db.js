@@ -131,6 +131,18 @@ CREATE TABLE IF NOT EXISTS notificacoes (
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
 
+CREATE TABLE IF NOT EXISTS anotacoes (
+  id SERIAL PRIMARY KEY,
+  titulo TEXT NOT NULL,
+  numero_processo TEXT,                    -- 20 dígitos (opcional)
+  sei TEXT,
+  etiquetas TEXT,                          -- separadas por vírgula
+  texto TEXT,
+  fixada INTEGER NOT NULL DEFAULT 0,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
+  atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);
+
 CREATE TABLE IF NOT EXISTS config (
   chave TEXT PRIMARY KEY,
   valor TEXT
@@ -193,6 +205,11 @@ const MIGRACOES = [
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_hora TEXT;
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_descricao TEXT;
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS audiencia_antecedencia_min INTEGER NOT NULL DEFAULT 1440;`,
+  `CREATE TABLE IF NOT EXISTS anotacoes (
+     id SERIAL PRIMARY KEY, titulo TEXT NOT NULL, numero_processo TEXT, sei TEXT, etiquetas TEXT, texto TEXT,
+     fixada INTEGER NOT NULL DEFAULT 0,
+     criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
+     atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */
