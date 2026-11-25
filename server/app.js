@@ -86,6 +86,17 @@ function horaValida(v) {
   const m = String(v).match(/^(\d{2}):(\d{2})$/);
   return !!m && Number(m[1]) <= 23 && Number(m[2]) <= 59;
 }
+/** Traduz os erros mais comuns de SMTP para uma orientação em português. */
+function explicarErroEmail(e) {
+  const m = String(e?.message || e);
+  if (/535|Username and Password not accepted|BadCredentials|Invalid login|authentication failed/i.test(m)) {
+    return 'O servidor de e-mail recusou o usuário ou a senha. No Gmail: use o endereço completo no "Usuário" e a SENHA DE APP de 16 letras no "Senha" (não a senha normal); a verificação em duas etapas precisa estar ativa. Depois de digitar a senha, clique em Salvar e teste de novo.';
+  }
+  if (/ETIMEDOUT|ECONNREFUSED|ENOTFOUND|getaddrinfo/i.test(m)) return 'Não foi possível conectar ao servidor de e-mail. Confira o "Servidor SMTP" e a "Porta" (Gmail: smtp.gmail.com, porta 587, SSL desmarcado).';
+  if (/wrong version number|SSL routines|ssl3/i.test(m)) return 'Configuração de segurança incompatível: com a porta 587, deixe "Conexão SSL direta" desmarcada; com a porta 465, marque.';
+  return `Falha no envio: ${m}`;
+}
+
 /** Converte o :id da URL em inteiro positivo (ou null). */
 function idNum(v) {
   return /^\d{1,9}$/.test(String(v)) ? Number(v) : null;
@@ -1240,7 +1251,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         if (!r.enviado) return erro(res, 400, `E-mail não enviado: ${r.motivo}.`);
         res.json({ ok: true });
       } catch (e) {
-        erro(res, 502, `Falha no envio: ${e.message}`);
+        erro(res, 502, explicarErroEmail(e));
       }
     }),
   );

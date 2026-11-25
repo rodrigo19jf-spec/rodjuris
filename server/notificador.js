@@ -20,8 +20,9 @@ export async function configEmail(db) {
     host: c('smtp_host', 'SMTP_HOST'),
     port: Number(c('smtp_port', 'SMTP_PORT') || 587),
     secure: (process.env.SMTP_SECURE ?? cfg.smtp_seguro ?? '0') === '1',
-    user: c('smtp_usuario', 'SMTP_USER'),
-    pass: c('smtp_senha', 'SMTP_PASS'),
+    user: c('smtp_usuario', 'SMTP_USER').trim(),
+    // Senha de app do Gmail aparece como "abcd efgh ijkl mnop": os espaços não fazem parte dela.
+    pass: /gmail|googlemail/i.test(c('smtp_host', 'SMTP_HOST')) ? c('smtp_senha', 'SMTP_PASS').replace(/\s+/g, '') : c('smtp_senha', 'SMTP_PASS'),
     from: c('smtp_remetente', 'SMTP_FROM'),
   };
 }
