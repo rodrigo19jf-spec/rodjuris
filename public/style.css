@@ -219,6 +219,11 @@ input, select, textarea {
 textarea { min-height: 80px; resize: vertical; }
 input:focus, select:focus, textarea:focus, .btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .campo { margin-bottom: .85rem; }
+fieldset.bloco { border: 1px solid var(--border); border-radius: 10px; padding: .75rem 1rem 1rem; margin: 0 0 .85rem; }
+fieldset.bloco legend { font-weight: 600; padding: 0 .35rem; }
+.calc { background: var(--surface-2); border-radius: 8px; padding: .75rem; margin-bottom: .85rem; }
+.campos-3 { display: grid; grid-template-columns: 1fr .6fr 1fr; gap: .75rem; }
+@media (max-width: 480px) { .campos-3 { grid-template-columns: 1fr; } }
 .campos-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
 @media (max-width: 480px) { .campos-2 { grid-template-columns: 1fr; } }
 .check { display: flex; align-items: center; gap: .5rem; font-weight: 500; }

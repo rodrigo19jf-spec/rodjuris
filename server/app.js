@@ -8,6 +8,8 @@ import { buscarProcessoDataJud, testarConexoes } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.js';
 import { textoClasse } from './classes_cnj.js';
+import { SITUACOES_CUMPRIMENTO, calcularPrazo, sincronizarCumprimento } from './cumprimento.js';
+import { dataBrasilia } from './prazos.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -267,7 +269,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const db = req.db;
       const agora = agoraIso();
       const em7 = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc] = await Promise.all([
+      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares] = await Promise.all([
         db.valor("SELECT COUNT(*)::int FROM processos WHERE status = 'ativo'"),
         db.valor("SELECT COUNT(*)::int FROM processos WHERE monitorar = 1 AND status <> 'encerrado'"),
         db.valor('SELECT COUNT(*)::int FROM publicacoes WHERE lida = 0'),
@@ -290,6 +292,13 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
            FROM avisos_eproc a LEFT JOIN processos p ON p.numero = a.numero_processo
            ORDER BY a.disponibilizado_em DESC NULLS LAST LIMIT 30`,
         ),
+        db.all(
+          `SELECT id, numero, titulo, cliente, cumprimento_situacao, cumprimento_prazo, cumprimento_responsavel, cumprimento_multa,
+                  (SELECT MAX(pr.data) FROM providencias pr WHERE pr.processo_id = processos.id) AS ultima_providencia
+           FROM processos
+           WHERE liminar = 'deferida' AND cumprimento_situacao IN ('pendente', 'andamento', 'parcial')
+           ORDER BY cumprimento_prazo NULLS LAST, id`,
+        ),
       ]);
       res.json({
         processosAtivos: ativos,
@@ -301,6 +310,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         publicacoes,
         ultimaVerificacao: ultima,
         avisosEproc,
+        liminares,
       });
     }),
   );
@@ -325,8 +335,35 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (body.liminar && !LIMINAR.includes(body.liminar)) throw new Error('Situação da liminar inválida.');
       out.liminar = body.liminar || null;
     }
+    if (!parcial || body.cumprimento_situacao !== undefined) {
+      if (body.cumprimento_situacao && !SITUACOES_CUMPRIMENTO.includes(body.cumprimento_situacao)) {
+        throw new Error('Situação do cumprimento inválida.');
+      }
+      out.cumprimento_situacao = body.cumprimento_situacao || null;
+    }
+    for (const k of ['cumprimento_prazo', 'cumprimento_data']) {
+      if (!parcial || body[k] !== undefined) {
+        const v = body[k] ? String(body[k]).slice(0, 10) : null;
+        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw new Error('Data inválida no cumprimento da liminar.');
+        out[k] = v;
+      }
+    }
+    for (const k of ['cumprimento_responsavel', 'cumprimento_multa']) {
+      if (!parcial || body[k] !== undefined) out[k] = texto(body[k], 300);
+    }
+    if (body.cumprimento_cobranca_dias !== undefined && body.cumprimento_cobranca_dias !== null && body.cumprimento_cobranca_dias !== '') {
+      out.cumprimento_cobranca_dias = Math.max(1, Math.min(Number(body.cumprimento_cobranca_dias) || 3, 30));
+    }
     if (out.numero && !out.tribunal && !parcial) out.tribunal = siglaTribunal(out.numero);
     return out;
+  }
+
+  /** Regras do cumprimento: liminar deferida começa "pendente"; ao marcar "cumprida", registra a data. */
+  function ajustarCumprimento(d, atual = {}) {
+    const final = { ...atual, ...d };
+    if (final.liminar === 'deferida' && !final.cumprimento_situacao) d.cumprimento_situacao = 'pendente';
+    if (final.cumprimento_situacao === 'cumprida' && !final.cumprimento_data) d.cumprimento_data = dataBrasilia(agoraIso());
+    return d;
   }
 
   async function processoPorId(db, id) {
@@ -348,6 +385,11 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         params.push(req.query.liminar);
       } else if (req.query.liminar === 'sem_info') {
         where.push('p.liminar IS NULL');
+      }
+      if (req.query.cumprimento === 'pendente') {
+        where.push("p.liminar = 'deferida' AND p.cumprimento_situacao IN ('pendente', 'andamento', 'parcial')");
+      } else if (req.query.cumprimento === 'cumprida') {
+        where.push("p.liminar = 'deferida' AND p.cumprimento_situacao = 'cumprida'");
       }
       if (req.query.q) {
         const q = `%${String(req.query.q).trim()}%`;
@@ -416,10 +458,11 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       const p = await processoPorId(req.db, req.params.id);
       if (!p) return erro(res, 404, 'Processo não encontrado.');
-      [p.publicacoes, p.andamentos, p.lembretes] = await Promise.all([
+      [p.publicacoes, p.andamentos, p.lembretes, p.providencias] = await Promise.all([
         req.db.all('SELECT * FROM publicacoes WHERE processo_id = ? ORDER BY data_disponibilizacao DESC, id DESC LIMIT 200', p.id),
         req.db.all('SELECT * FROM andamentos WHERE processo_id = ? ORDER BY data DESC LIMIT 300', p.id),
         req.db.all('SELECT * FROM lembretes WHERE processo_id = ? ORDER BY concluido, data_hora', p.id),
+        req.db.all('SELECT * FROM providencias WHERE processo_id = ? ORDER BY data DESC, id DESC', p.id),
       ]);
       res.json(p);
     }),
@@ -430,7 +473,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     a(async (req, res) => {
       let d;
       try {
-        d = dadosProcesso(req.body || {});
+        d = ajustarCumprimento(dadosProcesso(req.body || {}));
       } catch (e) {
         return erro(res, 400, e.message);
       }
@@ -442,6 +485,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         `INSERT INTO processos (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING *`,
         ...cols.map((c) => d[c]),
       );
+      await sincronizarCumprimento(req.db, novo.id);
       res.status(201).json(novo);
       // Primeira verificação em segundo plano (cria a linha de base, sem avisos).
       if (novo.monitorar) emSegundoPlano(verificarProcesso(req.db, novo, { fetchFn }));
@@ -455,7 +499,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (!atual) return erro(res, 404, 'Processo não encontrado.');
       let d;
       try {
-        d = dadosProcesso(req.body || {}, true);
+        d = ajustarCumprimento(dadosProcesso(req.body || {}, true), atual);
       } catch (e) {
         return erro(res, 400, e.message);
       }
@@ -474,7 +518,50 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
           atual.id,
         );
       }
+      await sincronizarCumprimento(req.db, atual.id);
       res.json(await req.db.get('SELECT * FROM processos WHERE id = ?', atual.id));
+    }),
+  );
+
+  // ───────────── providências (histórico do cumprimento) ─────────────
+  app.post(
+    '/api/processos/:id/providencias',
+    a(async (req, res) => {
+      const p = await processoPorId(req.db, req.params.id);
+      if (!p) return erro(res, 404, 'Processo não encontrado.');
+      const data = String(req.body?.data || dataBrasilia(agoraIso())).slice(0, 10);
+      const descricao = texto(req.body?.descricao, 2000);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return erro(res, 400, 'Data inválida.');
+      if (!descricao) return erro(res, 400, 'Descreva a providência.');
+      const nova = await req.db.get(
+        'INSERT INTO providencias (processo_id, data, descricao) VALUES (?, ?, ?) RETURNING *',
+        p.id,
+        data,
+        descricao,
+      );
+      res.status(201).json(nova);
+    }),
+  );
+
+  app.delete(
+    '/api/providencias/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const r = id ? await req.db.run('DELETE FROM providencias WHERE id = ?', id) : { rowCount: 0 };
+      if (!r.rowCount) return erro(res, 404, 'Providência não encontrada.');
+      res.json({ ok: true });
+    }),
+  );
+
+  // Calculadora de prazo (sugestão para preencher a data-limite).
+  app.post(
+    '/api/prazos/calcular',
+    a(async (req, res) => {
+      try {
+        res.json(calcularPrazo(req.body || {}));
+      } catch (e) {
+        erro(res, 400, e.message);
+      }
     }),
   );
 

@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS processos (
   status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','suspenso','encerrado')),
   observacoes TEXT,
   liminar TEXT CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida')),
+  cumprimento_situacao TEXT CHECK (cumprimento_situacao IN ('pendente','andamento','parcial','cumprida')),
+  cumprimento_prazo TEXT,                  -- AAAA-MM-DD (data-limite fixada na decisão)
+  cumprimento_responsavel TEXT,            -- setor/pessoa a cobrar
+  cumprimento_multa TEXT,
+  cumprimento_data TEXT,                   -- AAAA-MM-DD (quando foi cumprida)
+  cumprimento_cobranca_dias INTEGER NOT NULL DEFAULT 3, -- cobrar a cada N dias úteis
   monitorar INTEGER NOT NULL DEFAULT 1,
   ultima_verificacao TEXT,
   erro_verificacao TEXT,
@@ -73,6 +79,15 @@ CREATE TABLE IF NOT EXISTS andamentos (
   UNIQUE (processo_id, external_key)
 );
 CREATE INDEX IF NOT EXISTS ix_andamentos_processo ON andamentos(processo_id, data DESC);
+
+CREATE TABLE IF NOT EXISTS providencias (
+  id SERIAL PRIMARY KEY,
+  processo_id INTEGER NOT NULL REFERENCES processos(id) ON DELETE CASCADE,
+  data TEXT NOT NULL,                      -- AAAA-MM-DD
+  descricao TEXT NOT NULL,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);
+CREATE INDEX IF NOT EXISTS ix_providencias_processo ON providencias(processo_id, data DESC);
 
 CREATE TABLE IF NOT EXISTS avisos_eproc (
   id TEXT PRIMARY KEY,                     -- "<grau>|<idAviso>"
@@ -149,6 +164,20 @@ const MIGRACOES = [
    CREATE UNIQUE INDEX IF NOT EXISTS ux_lembretes_origem ON lembretes(origem);`,
   `ALTER TABLE processos ADD COLUMN IF NOT EXISTS liminar TEXT
      CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida'));`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_situacao TEXT
+     CHECK (cumprimento_situacao IN ('pendente','andamento','parcial','cumprida'));
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_prazo TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_responsavel TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_multa TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_data TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS cumprimento_cobranca_dias INTEGER NOT NULL DEFAULT 3;
+   UPDATE processos SET cumprimento_situacao = 'pendente' WHERE liminar = 'deferida' AND cumprimento_situacao IS NULL;
+   CREATE TABLE IF NOT EXISTS providencias (
+     id SERIAL PRIMARY KEY,
+     processo_id INTEGER NOT NULL REFERENCES processos(id) ON DELETE CASCADE,
+     data TEXT NOT NULL, descricao TEXT NOT NULL,
+     criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});
+   CREATE INDEX IF NOT EXISTS ix_providencias_processo ON providencias(processo_id, data DESC);`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

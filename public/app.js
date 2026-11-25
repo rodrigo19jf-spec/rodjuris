@@ -83,6 +83,23 @@ const LIMINAR = {
 };
 const CLASSE_LIMINAR = { deferida: 'ok', indeferida: 'erro', nao_analisada: 'aviso', nao_requerida: '' };
 const seloLiminar = (v) => (v && LIMINAR[v] ? `<span class="badge ${CLASSE_LIMINAR[v]}">${LIMINAR[v]}</span>` : '');
+const CUMPRIMENTO = {
+  pendente: 'Pendente de cumprimento',
+  andamento: 'Cumprimento em andamento',
+  parcial: 'Cumprida parcialmente',
+  cumprida: 'Cumprida',
+};
+const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
+function seloCumprimento(p) {
+  if (p.liminar !== 'deferida' || !p.cumprimento_situacao) return '';
+  if (p.cumprimento_situacao === 'cumprida') {
+    return `<span class="badge ok">✓ Liminar cumprida${p.cumprimento_data ? ` em ${fmtData(p.cumprimento_data)}` : ''}</span>`;
+  }
+  const hoje = ymdLocal(new Date());
+  const vencida = p.cumprimento_prazo && p.cumprimento_prazo < hoje;
+  const prazo = p.cumprimento_prazo ? ` · ${vencida ? 'venceu' : p.cumprimento_prazo === hoje ? 'vence hoje' : 'vence'} ${p.cumprimento_prazo === hoje ? '' : fmtData(p.cumprimento_prazo)}` : '';
+  return `<span class="badge ${vencida ? 'erro' : 'aviso'}">${CUMPRIMENTO[p.cumprimento_situacao]}${prazo}</span>`;
+}
 const ANTECEDENCIAS = [
   [0, 'Na hora'], [15, '15 minutos antes'], [30, '30 minutos antes'], [60, '1 hora antes'], [120, '2 horas antes'],
   [1440, '1 dia antes'], [2880, '2 dias antes'], [4320, '3 dias antes'], [10080, '1 semana antes'],
@@ -404,6 +421,14 @@ async function telaPainel(c) {
         ${a.processo_id ? `<a href="#/processos/${a.processo_id}">${esc(a.processo_titulo || formatarCnj(a.numero_processo))}</a>` : `<span class="mono">${esc(formatarCnj(a.numero_processo))}</span> <button class="btn pequeno cadastrar-de-pub" data-numero="${esc(a.numero_processo)}">Cadastrar</button>`}
         ${a.disponibilizado_em ? `<span class="muted"> · ${fmtDataHora(a.disponibilizado_em)}</span>` : ''}</li>`).join('')}</ul>
     </section>` : ''}
+    ${d.liminares?.length ? `<section class="card" style="margin-top:1rem;border-left:4px solid var(--warn)">
+      <div class="secao-titulo" style="margin-top:0"><h2>📌 Liminares pendentes de cumprimento (${d.liminares.length})</h2>
+        <a class="small" href="#/processos?cumprimento=pendente">Ver na lista</a></div>
+      <ul class="lista">${d.liminares.map((l) => `<li class="small">
+        <div class="acoes"><a href="#/processos/${l.id}" style="font-weight:600">${esc(l.titulo || l.cliente || formatarCnj(l.numero))}</a> ${seloCumprimento({ ...l, liminar: 'deferida' })}</div>
+        <div class="muted">${l.cumprimento_responsavel ? `Responsável: ${esc(l.cumprimento_responsavel)} · ` : ''}${l.ultima_providencia ? `Última providência: ${fmtData(l.ultima_providencia)}` : 'Nenhuma providência registrada'}${l.cumprimento_multa ? ` · Multa: ${esc(l.cumprimento_multa)}` : ''}</div>
+      </li>`).join('')}</ul>
+    </section>` : ''}
     <div class="grade grade-2">
       <section>
         <div class="secao-titulo"><h2>Próximos 7 dias</h2><button class="btn pequeno" id="novo-lembrete">${icone('mais')} Lembrete</button></div>
@@ -456,16 +481,22 @@ async function telaProcessos(c) {
         ${Object.entries(LIMINAR).map(([k, v]) => `<option value="${k}" ${params.get('liminar') === k ? 'selected' : ''}>${v}</option>`).join('')}
         <option value="sem_info" ${params.get('liminar') === 'sem_info' ? 'selected' : ''}>Liminar: não informada</option>
       </select>
+      <select id="filtro-cumprimento" aria-label="Cumprimento da liminar" style="width:auto">
+        <option value="">Cumprimento: todos</option>
+        <option value="pendente" ${params.get('cumprimento') === 'pendente' ? 'selected' : ''}>Cumprimento: pendente</option>
+        <option value="cumprida" ${params.get('cumprimento') === 'cumprida' ? 'selected' : ''}>Cumprimento: cumprida</option>
+      </select>
     </div>
     <div id="lista-processos" class="grade grade-2"></div>`;
   const carregar = async () => {
     const q = $('#busca').value.trim();
     const status = $('#filtro-status').value;
     const liminar = $('#filtro-liminar').value;
-    const lista = await api(`/processos?${new URLSearchParams({ q, status, liminar })}`);
+    const cumprimento = $('#filtro-cumprimento').value;
+    const lista = await api(`/processos?${new URLSearchParams({ q, status, liminar, cumprimento })}`);
     const alvo = $('#lista-processos');
     if (!lista.length) {
-      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status || liminar ? 'Nenhum processo encontrado.' : 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>'}</div>`;
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status || liminar || cumprimento ? 'Nenhum processo encontrado.' : 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>'}</div>`;
       $('#primeiro')?.addEventListener('click', () => formProcesso());
       return;
     }
@@ -483,6 +514,7 @@ async function telaProcessos(c) {
         <div class="acoes small" style="margin-top:.5rem">
           <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
           ${seloLiminar(p.liminar)}
+          ${seloCumprimento(p)}
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
@@ -502,10 +534,11 @@ async function telaProcessos(c) {
   };
   $('#filtro-status').onchange = carregar;
   $('#filtro-liminar').onchange = carregar;
+  $('#filtro-cumprimento').onchange = carregar;
   await carregar();
 }
 
-function formProcesso(proc = null, aoSalvar) {
+function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
   const editando = !!proc?.id;
   const p = proc || {};
   abrirModal(editando ? 'Editar processo' : 'Novo processo', `
@@ -536,6 +569,31 @@ function formProcesso(proc = null, aoSalvar) {
           <option value="">— Não informado —</option>
           ${Object.entries(LIMINAR).map(([k, v]) => `<option value="${k}" ${p.liminar === k ? 'selected' : ''}>${v}</option>`).join('')}
         </select></div>
+      <fieldset id="bloco-cumprimento" class="bloco" ${p.liminar === 'deferida' ? '' : 'hidden'}>
+        <legend>Cumprimento da liminar</legend>
+        <div class="campos-2">
+          <div class="campo"><label for="f-cump-sit">Situação</label>
+            <select id="f-cump-sit">${Object.entries(CUMPRIMENTO).map(([k, v]) => `<option value="${k}" ${(p.cumprimento_situacao || 'pendente') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          <div class="campo"><label for="f-cump-prazo">Prazo para cumprimento</label>
+            <div class="acoes" style="flex-wrap:nowrap"><input type="date" id="f-cump-prazo" value="${esc(p.cumprimento_prazo || '')}"><button type="button" class="btn" id="abrir-calc">Calcular</button></div></div>
+        </div>
+        <div id="calc-prazo" class="calc" hidden>
+          <div class="campos-3">
+            <div class="campo"><label for="calc-data">Data da intimação</label><input type="date" id="calc-data" value="${ymdLocal(new Date())}"></div>
+            <div class="campo"><label for="calc-qtd">Prazo</label><input type="number" id="calc-qtd" min="1" max="3650" value="5"></div>
+            <div class="campo"><label for="calc-unid">Unidade</label><select id="calc-unid"><option value="uteis">dias úteis</option><option value="corridos">dias corridos</option><option value="horas">horas</option></select></div>
+          </div>
+          <div class="acoes"><button type="button" class="btn pequeno primario" id="calc-usar">Calcular e usar esta data</button><span class="ajuda" id="calc-obs"></span></div>
+        </div>
+        <div class="campo"><label for="f-cump-resp">Setor / responsável a cobrar</label><input id="f-cump-resp" placeholder="Ex.: Diretoria de Contratos – Fulano" value="${esc(p.cumprimento_responsavel || '')}"></div>
+        <div class="campos-2">
+          <div class="campo"><label for="f-cump-multa">Multa fixada (opcional)</label><input id="f-cump-multa" placeholder="Ex.: R$ 1.000/dia, até R$ 30 mil" value="${esc(p.cumprimento_multa || '')}"></div>
+          <div class="campo"><label for="f-cump-cobr">Lembrar de cobrar a cada</label>
+            <div class="acoes" style="flex-wrap:nowrap"><input type="number" id="f-cump-cobr" min="1" max="30" value="${esc(p.cumprimento_cobranca_dias || 3)}" style="max-width:90px"><span class="small muted">dias úteis</span></div></div>
+        </div>
+        <div class="campo" id="campo-cump-data" ${['cumprida', 'parcial'].includes(p.cumprimento_situacao) ? '' : 'hidden'}><label for="f-cump-data">Data do cumprimento</label><input type="date" id="f-cump-data" value="${esc(p.cumprimento_data || '')}"></div>
+        <p class="ajuda" style="margin:0">Enquanto pendente, o app cria o lembrete do prazo final (aviso 2 dias antes) e lembretes de cobrança no intervalo escolhido. Ao marcar como cumprida, eles são concluídos automaticamente.</p>
+      </fieldset>
       <div class="campo"><label for="f-assunto">Assunto</label><input id="f-assunto" value="${esc(p.assunto || '')}"></div>
       <div class="campo"><label for="f-obs">Observações</label><textarea id="f-obs">${esc(p.observacoes || '')}</textarea></div>
       <label class="check"><input type="checkbox" id="f-monitorar" ${p.monitorar === 0 ? '' : 'checked'}> Monitorar publicações e andamentos e me avisar quando houver novidade</label>
@@ -543,6 +601,31 @@ function formProcesso(proc = null, aoSalvar) {
       <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
     </form>`, {
     aoAbrir: (m, fechar) => {
+      $('#f-liminar', m).onchange = (e) => ($('#bloco-cumprimento', m).hidden = e.target.value !== 'deferida');
+      if (focoCumprimento && !$('#bloco-cumprimento', m).hidden) {
+        setTimeout(() => {
+          $('#bloco-cumprimento', m).scrollIntoView({ block: 'start' });
+          $('#f-cump-sit', m).focus({ preventScroll: true });
+        }, 50);
+      }
+      $('#f-cump-sit', m).onchange = (e) => {
+        const comData = ['cumprida', 'parcial'].includes(e.target.value);
+        $('#campo-cump-data', m).hidden = !comData;
+        if (e.target.value === 'cumprida' && !$('#f-cump-data', m).value) $('#f-cump-data', m).value = ymdLocal(new Date());
+      };
+      $('#abrir-calc', m).onclick = () => ($('#calc-prazo', m).hidden = !$('#calc-prazo', m).hidden);
+      $('#calc-usar', m).onclick = async () => {
+        try {
+          const r = await api('/prazos/calcular', {
+            metodo: 'POST',
+            corpo: { data: $('#calc-data', m).value, quantidade: $('#calc-qtd', m).value, unidade: $('#calc-unid', m).value },
+          });
+          $('#f-cump-prazo', m).value = r.data;
+          $('#calc-obs', m).textContent = `→ ${fmtData(r.data)}. ${r.observacao} Confira a data.`;
+        } catch (err) {
+          $('#calc-obs', m).textContent = err.message;
+        }
+      };
       $('#buscar-datajud', m).onclick = async (e) => {
         const b = e.currentTarget;
         b.disabled = true;
@@ -575,6 +658,16 @@ function formProcesso(proc = null, aoSalvar) {
           assunto: $('#f-assunto', m).value,
           status: $('#f-status', m).value,
           liminar: $('#f-liminar', m).value || null,
+          ...($('#f-liminar', m).value === 'deferida'
+            ? {
+                cumprimento_situacao: $('#f-cump-sit', m).value,
+                cumprimento_prazo: $('#f-cump-prazo', m).value || null,
+                cumprimento_responsavel: $('#f-cump-resp', m).value,
+                cumprimento_multa: $('#f-cump-multa', m).value,
+                cumprimento_cobranca_dias: $('#f-cump-cobr', m).value,
+                cumprimento_data: $('#campo-cump-data', m).hidden ? null : $('#f-cump-data', m).value || null,
+              }
+            : {}),
           observacoes: $('#f-obs', m).value,
           monitorar: $('#f-monitorar', m).checked,
         };
@@ -610,6 +703,7 @@ async function telaProcesso(c, id, abaInicial) {
           <div class="acoes small" style="margin-top:.35rem">
             <span class="badge ${p.status === 'ativo' ? 'ok' : ''}">${STATUS[p.status]}</span>
             ${seloLiminar(p.liminar)}
+            ${seloCumprimento(p)}
             ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
             ${p.pje_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos direto da Consulta Pública do PJe do TJMG">Andamentos via PJe TJMG</span>' : ''}
             ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe">Migrado para o eproc</span>' : ''}
@@ -627,6 +721,31 @@ async function telaProcesso(c, id, abaInicial) {
       ${p.erro_verificacao ? `<div class="alerta-caixa erro small" style="margin-top:.5rem">${esc(p.erro_verificacao)}</div>` : ''}
       ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
     </div>
+    ${p.liminar === 'deferida' ? `<section class="card" style="margin-top:1rem;border-left:4px solid ${cumprimentoAberto(p) ? 'var(--warn)' : 'var(--ok)'}">
+      <div class="secao-titulo" style="margin-top:0"><h2>Cumprimento da liminar</h2>${seloCumprimento(p)}</div>
+      <dl class="dados">
+        ${[
+          ['Prazo para cumprimento', p.cumprimento_prazo ? `${fmtData(p.cumprimento_prazo)}${cumprimentoAberto(p) ? ` (${relativo(`${p.cumprimento_prazo}T18:00:00-03:00`)})` : ''}` : 'Não informado'],
+          ['Setor / responsável', p.cumprimento_responsavel],
+          ['Multa fixada', p.cumprimento_multa],
+          cumprimentoAberto(p) ? ['Cobrança', `a cada ${p.cumprimento_cobranca_dias || 3} dia(s) útil(eis)`] : ['Cumprida em', p.cumprimento_data ? fmtData(p.cumprimento_data) : null],
+        ].filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}
+      </dl>
+      <div class="acoes" style="margin-top:.75rem">
+        ${cumprimentoAberto(p) ? '<button class="btn pequeno primario" id="marcar-cumprida">✓ Marcar como cumprida</button>' : '<button class="btn pequeno" id="reabrir-cumprimento">Reabrir (pendente)</button>'}
+        <button class="btn pequeno" id="editar-cumprimento">Editar cumprimento</button>
+      </div>
+      <h3 style="margin-top:1rem">Providências</h3>
+      <form id="form-prov" class="acoes" style="flex-wrap:wrap">
+        <input type="date" id="prov-data" value="${ymdLocal(new Date())}" style="width:auto" aria-label="Data">
+        <input id="prov-desc" placeholder="Ex.: Ofício enviado à Diretoria de Contratos" style="flex:1 1 240px" aria-label="Providência" required maxlength="2000">
+        <button class="btn pequeno">Registrar</button>
+      </form>
+      ${p.providencias.length ? `<ul class="lista" style="margin-top:.5rem">${p.providencias.map((pr) => `<li class="small item-linha">
+        <div class="corpo"><strong>${fmtData(pr.data)}</strong> — ${esc(pr.descricao)}</div>
+        <button class="btn pequeno perigo excluir-prov" data-id="${pr.id}" aria-label="Excluir providência">✕</button></li>`).join('')}</ul>`
+        : '<p class="small muted">Nenhuma providência registrada ainda.</p>'}
+    </section>` : ''}
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
       <button data-aba="andamentos">Andamentos (${p.andamentos.length})${naoLidosAnd ? ` <span class="badge novo">${naoLidosAnd}</span>` : ''}</button>
@@ -661,6 +780,33 @@ async function telaProcesso(c, id, abaInicial) {
   mostrar(aba);
 
   $('#editar').onclick = () => formProcesso(p, () => telaProcesso(c, id));
+  $('#editar-cumprimento')?.addEventListener('click', () => formProcesso(p, () => telaProcesso(c, id), { focoCumprimento: true }));
+  $('#marcar-cumprida')?.addEventListener('click', async () => {
+    if (!(await confirmar('Marcar a liminar como cumprida? Os lembretes de prazo e de cobrança deste processo serão concluídos.'))) return;
+    const hoje = ymdLocal(new Date());
+    await api(`/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'cumprida', cumprimento_data: hoje } });
+    await api(`/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: hoje, descricao: 'Liminar marcada como cumprida.' } });
+    toast('Liminar marcada como cumprida.');
+    telaProcesso(c, id);
+  });
+  $('#reabrir-cumprimento')?.addEventListener('click', async () => {
+    await api(`/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'pendente', cumprimento_data: null } });
+    toast('Cumprimento reaberto: lembretes reativados.');
+    telaProcesso(c, id);
+  });
+  $('#form-prov')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await api(`/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: $('#prov-data').value, descricao: $('#prov-desc').value } });
+    toast('Providência registrada.');
+    telaProcesso(c, id);
+  });
+  $$('.excluir-prov', c).forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!(await confirmar('Excluir esta providência?'))) return;
+      await api(`/providencias/${b.dataset.id}`, { metodo: 'DELETE' });
+      telaProcesso(c, id);
+    }),
+  );
   $('#excluir').onclick = async () => {
     if (!(await confirmar('Excluir este processo? As publicações e andamentos dele também serão removidos da lista do processo.'))) return;
     await api(`/processos/${id}`, { metodo: 'DELETE' });

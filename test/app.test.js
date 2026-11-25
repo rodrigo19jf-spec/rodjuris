@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '5');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '6');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -774,4 +774,89 @@ test('processo: situação da liminar (cadastro, edição, filtro e validação)
   } finally {
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
   }
+});
+
+test('cumprimento da liminar: lembretes de prazo e de cobrança, providências e conclusão automática', async () => {
+  const { agendarCobrancas } = await import('../server/cumprimento.js');
+  const { vencimentoDiasUteis, dataBrasilia } = await import('../server/prazos.js');
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const NUM_C = gerarCnj(7878787, '2026', '8', '13', '0024');
+    const hoje = dataBrasilia(new Date().toISOString());
+    const prazo = vencimentoDiasUteis(hoje, 10);
+    // Liminar deferida já começa "pendente".
+    const r = await req('/api/processos', {
+      metodo: 'POST',
+      corpo: { numero: NUM_C, titulo: 'MS Cetus', cliente: 'FHEMIG', liminar: 'deferida', cumprimento_prazo: prazo, cumprimento_responsavel: 'Diretoria de Contratos', cumprimento_multa: 'R$ 1.000/dia', monitorar: false },
+    });
+    assert.equal(r.status, 201);
+    const id = r.corpo.id;
+    let p = await db.get('SELECT * FROM processos WHERE id = ?', id);
+    assert.equal(p.cumprimento_situacao, 'pendente');
+
+    const prazoL = await db.get("SELECT * FROM lembretes WHERE origem = ?", `cumprimento-prazo|${id}`);
+    assert.equal(prazoL.tipo, 'prazo');
+    assert.equal(prazoL.data_hora, new Date(`${prazo}T18:00:00-03:00`).toISOString());
+    assert.equal(prazoL.antecedencia_min, 2880, 'aviso 2 dias antes');
+    assert.match(prazoL.descricao, /Diretoria de Contratos/);
+    const cobr = await db.all('SELECT * FROM lembretes WHERE origem LIKE ? AND concluido = 0', `cobranca|${id}|%`);
+    assert.equal(cobr.length, 1);
+    assert.equal(cobr[0].data_hora, new Date(`${vencimentoDiasUteis(hoje, 3)}T09:00:00-03:00`).toISOString(), 'cobrança em 3 dias úteis, às 9h');
+
+    // Mudar o prazo atualiza o mesmo lembrete (sem duplicar) e volta a avisar.
+    await db.run('UPDATE lembretes SET notificado_em = ? WHERE id = ?', new Date().toISOString(), prazoL.id);
+    const novoPrazo = vencimentoDiasUteis(hoje, 12);
+    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_prazo: novoPrazo, cumprimento_situacao: 'andamento' } });
+    const prazoL2 = await db.get('SELECT * FROM lembretes WHERE origem = ?', `cumprimento-prazo|${id}`);
+    assert.equal(prazoL2.id, prazoL.id);
+    assert.equal(prazoL2.data_hora, new Date(`${novoPrazo}T18:00:00-03:00`).toISOString());
+    assert.equal(prazoL2.notificado_em, null);
+
+    // Depois que a cobrança é avisada, o agendador cria a próxima.
+    await db.run('UPDATE lembretes SET notificado_em = ? WHERE id = ?', new Date().toISOString(), cobr[0].id);
+    assert.equal(await agendarCobrancas(db), 1);
+    assert.equal(await agendarCobrancas(db), 0, 'não duplica');
+
+    // Providências.
+    const pr = await req(`/api/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: hoje, descricao: 'Ofício enviado à Diretoria de Contratos' } });
+    assert.equal(pr.status, 201);
+    assert.equal((await req(`/api/processos/${id}/providencias`, { metodo: 'POST', corpo: { descricao: '' } })).status, 400);
+    const det = await req(`/api/processos/${id}`);
+    assert.equal(det.corpo.providencias.length, 1);
+
+    // Painel e filtro.
+    const painel = await req('/api/painel');
+    const item = painel.corpo.liminares.find((l) => l.id === id);
+    assert.equal(item.ultima_providencia, hoje);
+    assert.ok((await req('/api/processos?cumprimento=pendente')).corpo.some((x) => x.id === id));
+
+    // Cumprida: registra a data e conclui todos os lembretes do cumprimento.
+    const c2 = await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'cumprida' } });
+    assert.equal(c2.corpo.cumprimento_data, hoje, 'data do cumprimento preenchida automaticamente');
+    assert.equal(await db.valor("SELECT COUNT(*)::int FROM lembretes WHERE processo_id = ? AND concluido = 0 AND (origem LIKE 'cobranca|%' OR origem LIKE 'cumprimento-prazo|%')", id), 0);
+    assert.equal(await agendarCobrancas(db), 0, 'cumprida não gera cobrança');
+    assert.ok((await req('/api/processos?cumprimento=cumprida')).corpo.some((x) => x.id === id));
+    assert.ok(!(await req('/api/painel')).corpo.liminares.some((l) => l.id === id));
+
+    // Reabrir reativa o lembrete do prazo.
+    await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'pendente', cumprimento_data: null } });
+    assert.equal((await db.get('SELECT concluido FROM lembretes WHERE origem = ?', `cumprimento-prazo|${id}`)).concluido, 0);
+
+    assert.equal((await req(`/api/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'quase' } })).status, 400);
+    assert.equal((await req(`/api/providencias/${pr.corpo.id}`, { metodo: 'DELETE' })).status, 200);
+    await req(`/api/processos/${id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+});
+
+test('calculadora de prazo (dias úteis, corridos e horas)', async () => {
+  const u = await req('/api/prazos/calcular', { metodo: 'POST', corpo: { data: '2026-11-11', quantidade: 15, unidade: 'uteis' } });
+  assert.equal(u.corpo.data, '2026-12-03');
+  const c = await req('/api/prazos/calcular', { metodo: 'POST', corpo: { data: '2026-11-11', quantidade: 5, unidade: 'corridos' } });
+  assert.equal(c.corpo.data, '2026-11-16');
+  const h = await req('/api/prazos/calcular', { metodo: 'POST', corpo: { data: '2026-11-11', quantidade: 48, unidade: 'horas' } });
+  assert.equal(h.corpo.data, '2026-11-13');
+  assert.equal((await req('/api/prazos/calcular', { metodo: 'POST', corpo: { quantidade: 5 } })).status, 400);
 });

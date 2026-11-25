@@ -4,6 +4,7 @@ import { buscarProcessoDataJud, buscarPublicacoesDjen } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, listarAvisosPendentesEproc } from './eproc_mni.js';
 import { textoClasse } from './classes_cnj.js';
+import { agendarCobrancas } from './cumprimento.js';
 import { dataBrasilia, isoBrasilia, lerIntimacaoComPrazo, parteEhCliente, somarDiasCorridos, vencimentoDiasUteis } from './prazos.js';
 import { formatarDataHora, notificar } from './notificador.js';
 
@@ -561,6 +562,7 @@ export async function verificarAvisosEproc(db, { fetchFn = fetch, forcar = false
  */
 export async function executarCiclo(db, { fetchFn = fetch, prazoMs = Infinity, pausaMs = 1500 } = {}) {
   const inicio = Date.now();
+  await agendarCobrancas(db); // próxima cobrança das liminares pendentes de cumprimento
   const lembretes = await verificarLembretes(db);
   const monitor = await verificarTudo(db, { fetchFn, forcar: false, prazoMs, pausaMs });
   let avisosEproc = { novos: 0 };
