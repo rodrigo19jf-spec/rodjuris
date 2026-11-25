@@ -9,7 +9,7 @@ import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.js';
 import { textoClasse } from './classes_cnj.js';
 import { SITUACOES_CUMPRIMENTO, calcularPrazo, sincronizarCumprimento } from './cumprimento.js';
-import { dataBrasilia } from './prazos.js';
+import { dataBrasilia, isoBrasilia } from './prazos.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -51,6 +51,16 @@ function iguaisSeguro(a, b) {
 const TIPOS_LEMBRETE = ['lembrete', 'prazo', 'audiencia', 'reuniao', 'outro'];
 const STATUS_PROC = ['ativo', 'suspenso', 'encerrado'];
 const LIMINAR = ['deferida', 'indeferida', 'nao_analisada', 'nao_requerida'];
+const CATEGORIAS_PROVIDENCIA = ['envio', 'solicitacao', 'cumprimento', 'audiencia', 'reuniao', 'peticao', 'outro'];
+const ROTULO_CATEGORIA = {
+  envio: 'Envio a setor',
+  solicitacao: 'Solicitação/ofício',
+  cumprimento: 'Cumprimento de decisão',
+  audiencia: 'Audiência',
+  reuniao: 'Reunião',
+  peticao: 'Petição/manifestação',
+  outro: 'Providência',
+};
 
 function texto(v, max = 5000) {
   if (v == null) return null;
@@ -331,6 +341,11 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.status = STATUS_PROC.includes(body.status) ? body.status : 'ativo';
     }
     if (!parcial || body.monitorar !== undefined) out.monitorar = body.monitorar === false || body.monitorar === 0 ? 0 : 1;
+    if (!parcial || body.sei !== undefined) {
+      const sei = texto(body.sei, 60);
+      if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
+      out.sei = sei;
+    }
     if (!parcial || body.liminar !== undefined) {
       if (body.liminar && !LIMINAR.includes(body.liminar)) throw new Error('Situação da liminar inválida.');
       out.liminar = body.liminar || null;
@@ -394,8 +409,10 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (req.query.q) {
         const q = `%${String(req.query.q).trim()}%`;
         const qd = somenteDigitos(req.query.q);
-        where.push('(p.titulo ILIKE ? OR p.cliente ILIKE ? OR p.parte_contraria ILIKE ? OR p.numero LIKE ?)');
-        params.push(q, q, q, qd ? `%${qd}%` : q);
+        where.push(
+          "(p.titulo ILIKE ? OR p.cliente ILIKE ? OR p.parte_contraria ILIKE ? OR p.numero LIKE ? OR regexp_replace(COALESCE(p.sei, ''), '[^0-9]', '', 'g') LIKE ?)",
+        );
+        params.push(q, q, q, qd ? `%${qd}%` : q, qd ? `%${qd}%` : '#');
       }
       const rows = await req.db.all(
         `SELECT * FROM (
@@ -462,7 +479,12 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         req.db.all('SELECT * FROM publicacoes WHERE processo_id = ? ORDER BY data_disponibilizacao DESC, id DESC LIMIT 200', p.id),
         req.db.all('SELECT * FROM andamentos WHERE processo_id = ? ORDER BY data DESC LIMIT 300', p.id),
         req.db.all('SELECT * FROM lembretes WHERE processo_id = ? ORDER BY concluido, data_hora', p.id),
-        req.db.all('SELECT * FROM providencias WHERE processo_id = ? ORDER BY data DESC, id DESC', p.id),
+        req.db.all(
+          `SELECT pr.*, l.id AS lembrete_id, l.data_hora AS lembrete_data_hora
+           FROM providencias pr LEFT JOIN lembretes l ON l.origem = 'providencia|' || pr.id
+           WHERE pr.processo_id = ? ORDER BY pr.data DESC, pr.hora DESC NULLS LAST, pr.id DESC`,
+          p.id,
+        ),
       ]);
       res.json(p);
     }),
@@ -523,23 +545,108 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     }),
   );
 
-  // ───────────── providências (histórico do cumprimento) ─────────────
+  // ───────────── providências (tudo o que foi feito no processo) ─────────────
+  function dadosProvidencia(body, atual = {}) {
+    const b = { ...atual, ...body };
+    const data = String(b.data || dataBrasilia(agoraIso())).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new Error('Data inválida.');
+    const hora = b.hora ? String(b.hora).slice(0, 5) : null;
+    if (hora && !/^\d{2}:\d{2}$/.test(hora)) throw new Error('Hora inválida.');
+    const categoria = CATEGORIAS_PROVIDENCIA.includes(b.categoria) ? b.categoria : 'outro';
+    const descricao = texto(b.descricao, 2000);
+    if (!descricao) throw new Error('Descreva a providência.');
+    return { data, hora, categoria, descricao };
+  }
+
+  /** Cria, atualiza ou remove o lembrete ligado a uma providência ("lembrar nesta data"). */
+  async function sincronizarLembreteProvidencia(db, pr, lembrar) {
+    const origem = `providencia|${pr.id}`;
+    const existente = await db.get('SELECT * FROM lembretes WHERE origem = ?', origem);
+    if (!lembrar) {
+      if (existente) await db.run('DELETE FROM lembretes WHERE id = ?', existente.id);
+      return;
+    }
+    const tipo = { audiencia: 'audiencia', reuniao: 'reuniao' }[pr.categoria] || 'lembrete';
+    const dataHora = isoBrasilia(pr.data, pr.hora || '09:00');
+    const titulo = `${ROTULO_CATEGORIA[pr.categoria] || 'Providência'}: ${pr.descricao.slice(0, 120)}`;
+    if (existente) {
+      await db.run(
+        `UPDATE lembretes SET titulo = ?, descricao = ?, tipo = ?, data_hora = ?${existente.data_hora !== dataHora ? ', notificado_em = NULL' : ''} WHERE id = ?`,
+        titulo,
+        pr.descricao,
+        tipo,
+        dataHora,
+        existente.id,
+      );
+    } else {
+      await db.run(
+        `INSERT INTO lembretes (titulo, descricao, tipo, data_hora, antecedencia_min, processo_id, origem)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        titulo,
+        pr.descricao,
+        tipo,
+        dataHora,
+        tipo === 'audiencia' ? 1440 : 60,
+        pr.processo_id,
+        origem,
+      );
+    }
+  }
+
+  async function comLembrete(db, pr) {
+    const l = await db.get('SELECT id, data_hora, concluido FROM lembretes WHERE origem = ?', `providencia|${pr.id}`);
+    return { ...pr, lembrete: l || null };
+  }
+
   app.post(
     '/api/processos/:id/providencias',
     a(async (req, res) => {
       const p = await processoPorId(req.db, req.params.id);
       if (!p) return erro(res, 404, 'Processo não encontrado.');
-      const data = String(req.body?.data || dataBrasilia(agoraIso())).slice(0, 10);
-      const descricao = texto(req.body?.descricao, 2000);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return erro(res, 400, 'Data inválida.');
-      if (!descricao) return erro(res, 400, 'Descreva a providência.');
+      let d;
+      try {
+        d = dadosProvidencia(req.body || {});
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
       const nova = await req.db.get(
-        'INSERT INTO providencias (processo_id, data, descricao) VALUES (?, ?, ?) RETURNING *',
+        'INSERT INTO providencias (processo_id, data, hora, categoria, descricao) VALUES (?, ?, ?, ?, ?) RETURNING *',
         p.id,
-        data,
-        descricao,
+        d.data,
+        d.hora,
+        d.categoria,
+        d.descricao,
       );
-      res.status(201).json(nova);
+      await sincronizarLembreteProvidencia(req.db, nova, !!req.body?.lembrar);
+      res.status(201).json(await comLembrete(req.db, nova));
+    }),
+  );
+
+  app.put(
+    '/api/providencias/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const atual = id ? await req.db.get('SELECT * FROM providencias WHERE id = ?', id) : undefined;
+      if (!atual) return erro(res, 404, 'Providência não encontrada.');
+      let d;
+      try {
+        d = dadosProvidencia(req.body || {}, atual);
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const pr = await req.db.get(
+        'UPDATE providencias SET data = ?, hora = ?, categoria = ?, descricao = ? WHERE id = ? RETURNING *',
+        d.data,
+        d.hora,
+        d.categoria,
+        d.descricao,
+        id,
+      );
+      if (req.body?.lembrar !== undefined) await sincronizarLembreteProvidencia(req.db, pr, !!req.body.lembrar);
+      else if (await req.db.get('SELECT 1 FROM lembretes WHERE origem = ?', `providencia|${id}`)) {
+        await sincronizarLembreteProvidencia(req.db, pr, true); // mantém o lembrete em dia com a nova data
+      }
+      res.json(await comLembrete(req.db, pr));
     }),
   );
 
@@ -549,6 +656,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const id = idNum(req.params.id);
       const r = id ? await req.db.run('DELETE FROM providencias WHERE id = ?', id) : { rowCount: 0 };
       if (!r.rowCount) return erro(res, 404, 'Providência não encontrada.');
+      await req.db.run('DELETE FROM lembretes WHERE origem = ?', `providencia|${id}`);
       res.json({ ok: true });
     }),
   );

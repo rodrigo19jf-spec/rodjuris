@@ -391,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '6');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '7');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -859,4 +859,66 @@ test('calculadora de prazo (dias úteis, corridos e horas)', async () => {
   const h = await req('/api/prazos/calcular', { metodo: 'POST', corpo: { data: '2026-11-11', quantidade: 48, unidade: 'horas' } });
   assert.equal(h.corpo.data, '2026-11-13');
   assert.equal((await req('/api/prazos/calcular', { metodo: 'POST', corpo: { quantidade: 5 } })).status, 400);
+});
+
+test('número SEI: cadastro, validação e busca (com ou sem pontuação)', async () => {
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const NUM_S = gerarCnj(9191919, '2026', '8', '13', '0024');
+    const r = await req('/api/processos', { metodo: 'POST', corpo: { numero: NUM_S, titulo: 'Caso SEI', sei: '1320.01.0012345/2026-12', monitorar: false } });
+    assert.equal(r.status, 201);
+    assert.equal(r.corpo.sei, '1320.01.0012345/2026-12');
+    assert.equal((await req(`/api/processos/${r.corpo.id}`, { metodo: 'PUT', corpo: { sei: 'abc' } })).status, 400);
+    for (const q of ['1320.01.0012345/2026-12', '13200100123452026', '0012345']) {
+      assert.ok((await req(`/api/processos?q=${encodeURIComponent(q)}`)).corpo.some((p) => p.id === r.corpo.id), q);
+    }
+    await req(`/api/processos/${r.corpo.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+});
+
+test('providências: tipo, hora, lembrete opcional, edição e exclusão', async () => {
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const NUM_P = gerarCnj(9292929, '2026', '8', '13', '0024');
+    const proc = (await req('/api/processos', { metodo: 'POST', corpo: { numero: NUM_P, titulo: 'Caso providências', monitorar: false } })).corpo;
+    const envio = await req(`/api/processos/${proc.id}/providencias`, {
+      metodo: 'POST',
+      corpo: { data: '2026-11-25', categoria: 'envio', descricao: 'Memorando de subsídios enviado à DPGF' },
+    });
+    assert.equal(envio.status, 201);
+    assert.equal(envio.corpo.categoria, 'envio');
+    assert.equal(envio.corpo.lembrete, null, 'sem lembrete quando não pedido');
+
+    const aud = await req(`/api/processos/${proc.id}/providencias`, {
+      metodo: 'POST',
+      corpo: { data: '2026-12-10', hora: '14:00', categoria: 'audiencia', descricao: 'Audiência de conciliação', lembrar: true },
+    });
+    const lemb = await db.get('SELECT * FROM lembretes WHERE origem = ?', `providencia|${aud.corpo.id}`);
+    assert.equal(lemb.tipo, 'audiencia');
+    assert.equal(lemb.data_hora, '2026-12-10T17:00:00.000Z', '14h em Brasília');
+    assert.equal(lemb.antecedencia_min, 1440, 'audiência avisa 1 dia antes');
+    assert.equal(lemb.processo_id, proc.id);
+
+    // Editar a data atualiza o lembrete; desmarcar remove.
+    await req(`/api/providencias/${aud.corpo.id}`, { metodo: 'PUT', corpo: { data: '2026-12-11' } });
+    assert.equal((await db.get('SELECT data_hora FROM lembretes WHERE id = ?', lemb.id)).data_hora, '2026-12-11T17:00:00.000Z');
+    await req(`/api/providencias/${aud.corpo.id}`, { metodo: 'PUT', corpo: { lembrar: false } });
+    assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `providencia|${aud.corpo.id}`), undefined);
+    await req(`/api/providencias/${aud.corpo.id}`, { metodo: 'PUT', corpo: { lembrar: true } });
+
+    const det = await req(`/api/processos/${proc.id}`);
+    assert.deepEqual(det.corpo.providencias.map((x) => x.categoria), ['audiencia', 'envio'], 'mais recentes primeiro');
+    assert.ok(det.corpo.providencias[0].lembrete_id);
+
+    assert.equal((await req(`/api/processos/${proc.id}/providencias`, { metodo: 'POST', corpo: { data: '2026-11-25', hora: '25h', descricao: 'x' } })).status, 400);
+    assert.equal((await req(`/api/providencias/${aud.corpo.id}`, { metodo: 'DELETE' })).status, 200);
+    assert.equal(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `providencia|${aud.corpo.id}`), undefined, 'excluir remove o lembrete');
+    await req(`/api/processos/${proc.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
 });

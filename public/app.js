@@ -89,6 +89,115 @@ const CUMPRIMENTO = {
   parcial: 'Cumprida parcialmente',
   cumprida: 'Cumprida',
 };
+const CATEGORIAS_PROV = {
+  envio: 'Envio a setor',
+  solicitacao: 'Solicitação/ofício',
+  cumprimento: 'Cumprimento de decisão',
+  audiencia: 'Audiência',
+  reuniao: 'Reunião',
+  peticao: 'Petição/manifestação',
+  outro: 'Outro',
+};
+
+function htmlProvidencias(lista, { acoes = true } = {}) {
+  if (!lista.length) return '<p class="small muted">Nenhuma providência registrada ainda.</p>';
+  const hoje = ymdLocal(new Date());
+  return `<ul class="lista">${lista.map((pr) => `<li class="item-linha">
+    <div class="corpo">
+      <div class="acoes small">
+        <strong>${fmtData(pr.data)}${pr.hora ? ` ${esc(pr.hora)}` : ''}</strong>
+        <span class="badge">${esc(CATEGORIAS_PROV[pr.categoria] || 'Providência')}</span>
+        ${pr.data > hoje ? '<span class="badge aviso">Agendada</span>' : ''}
+        ${pr.lembrete_id ? `<span class="badge ok" title="Lembrete criado">🔔 ${fmtDataHora(pr.lembrete_data_hora)}</span>` : ''}
+      </div>
+      <div style="white-space:pre-line;margin-top:.15rem">${esc(pr.descricao)}</div>
+    </div>
+    ${acoes ? `<div class="acoes" style="flex-wrap:nowrap">
+      <button class="btn pequeno editar-prov" data-id="${pr.id}">Editar</button>
+      <button class="btn pequeno perigo excluir-prov" data-id="${pr.id}" aria-label="Excluir providência">✕</button>
+    </div>` : ''}
+  </li>`).join('')}</ul>`;
+}
+
+/** Formulário (janela) para registrar ou editar uma providência. */
+function formProvidencia(processoId, pr = null, aoSalvar, { categoria = 'envio' } = {}) {
+  const editando = !!pr?.id;
+  const base = pr || { data: ymdLocal(new Date()), categoria };
+  abrirModal(editando ? 'Editar providência' : 'Registrar providência', `
+    <form id="form-providencia">
+      <div class="campos-2">
+        <div class="campo"><label for="pv-data">Data *</label><input type="date" id="pv-data" required value="${esc(base.data)}"></div>
+        <div class="campo"><label for="pv-hora">Hora (opcional)</label><input type="time" id="pv-hora" value="${esc(base.hora || '')}"></div>
+      </div>
+      <div class="campo"><label for="pv-cat">Tipo</label>
+        <select id="pv-cat">${Object.entries(CATEGORIAS_PROV).map(([k, v]) => `<option value="${k}" ${(base.categoria || 'outro') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="campo"><label for="pv-desc">Descrição *</label>
+        <textarea id="pv-desc" required maxlength="2000" placeholder="Ex.: Enviado memorando à DPGF solicitando o cumprimento da decisão (SEI doc. 12345678)">${esc(base.descricao || '')}</textarea></div>
+      <label class="check"><input type="checkbox" id="pv-lembrar" ${base.lembrete_id ? 'checked' : ''}> Criar lembrete nesta data</label>
+      <p class="ajuda" id="pv-ajuda">Útil para audiências, reuniões e retornos agendados. Sem hora, o aviso fica para as 9h.</p>
+      <div id="erro-pv" class="alerta-caixa erro" hidden></div>
+      <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
+    </form>`, {
+    aoAbrir: (m, fechar) => {
+      const sugerirLembrete = () => {
+        if (editando) return;
+        const futura = $('#pv-data', m).value > ymdLocal(new Date());
+        const agenda = ['audiencia', 'reuniao'].includes($('#pv-cat', m).value);
+        $('#pv-lembrar', m).checked = futura || (agenda && $('#pv-data', m).value >= ymdLocal(new Date()));
+      };
+      $('#pv-data', m).onchange = sugerirLembrete;
+      $('#pv-cat', m).onchange = sugerirLembrete;
+      $('#form-providencia', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const corpo = {
+          data: $('#pv-data', m).value,
+          hora: $('#pv-hora', m).value || null,
+          categoria: $('#pv-cat', m).value,
+          descricao: $('#pv-desc', m).value,
+          lembrar: $('#pv-lembrar', m).checked,
+        };
+        try {
+          await api(editando ? `/providencias/${pr.id}` : `/processos/${processoId}/providencias`, { metodo: editando ? 'PUT' : 'POST', corpo });
+          fechar();
+          toast(editando ? 'Providência atualizada.' : 'Providência registrada.');
+          aoSalvar?.();
+        } catch (err) {
+          const caixa = $('#erro-pv', m);
+          caixa.textContent = err.message;
+          caixa.hidden = false;
+        }
+      };
+    },
+  });
+}
+
+function ligarProvidencias(raiz, processoId, lista, aoMudar) {
+  $$('.editar-prov', raiz).forEach((b) =>
+    b.addEventListener('click', () => formProvidencia(processoId, lista.find((x) => String(x.id) === b.dataset.id), aoMudar)),
+  );
+  $$('.excluir-prov', raiz).forEach((b) =>
+    b.addEventListener('click', async () => {
+      if (!(await confirmar('Excluir esta providência? O lembrete ligado a ela (se houver) também será removido.'))) return;
+      await api(`/providencias/${b.dataset.id}`, { metodo: 'DELETE' });
+      toast('Providência excluída.');
+      aoMudar();
+    }),
+  );
+}
+
+async function copiarTexto(t) {
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+
 const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
 function seloCumprimento(p) {
   if (p.liminar !== 'deferida' || !p.cumprimento_situacao) return '';
@@ -471,7 +580,7 @@ async function telaProcessos(c) {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   c.innerHTML = `
     <div class="filtros">
-      <input type="search" id="busca" placeholder="Buscar por número, cliente, título…" value="${esc(params.get('q') || '')}" aria-label="Buscar">
+      <input type="search" id="busca" placeholder="Buscar por número, SEI, cliente, título…" value="${esc(params.get('q') || '')}" aria-label="Buscar">
       <select id="filtro-status" aria-label="Situação" style="width:auto">
         <option value="">Todas as situações</option>
         ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${params.get('status') === k ? 'selected' : ''}>${v}</option>`).join('')}
@@ -523,6 +632,7 @@ async function telaProcessos(c) {
           ${p.eproc_situacao === 'ativo' ? '<span class="badge ok">eproc</span>' : ''}
         </div>
         ${p.cliente && p.titulo ? `<div class="small muted" style="margin-top:.35rem">Cliente: ${esc(p.cliente)}</div>` : ''}
+        ${p.sei ? `<div class="small muted">SEI: <span class="mono">${esc(p.sei)}</span></div>` : ''}
         ${p.proximo_lembrete ? `<div class="small" style="margin-top:.25rem">Próximo compromisso: ${fmtDataHora(p.proximo_lembrete)}</div>` : ''}
       </a>`;
     }).join('');
@@ -551,7 +661,10 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
         </div>
         <div class="ajuda" id="ajuda-numero">"Buscar dados" preenche tribunal, classe e vara pelo eproc/PJe do TJMG ou pelo DataJud (CNJ).</div>
       </div>
-      <div class="campo"><label for="f-titulo">Título / apelido</label><input id="f-titulo" placeholder="Ex.: Silva x Banco XYZ" value="${esc(p.titulo || '')}"></div>
+      <div class="campos-2">
+        <div class="campo"><label for="f-titulo">Título / apelido</label><input id="f-titulo" placeholder="Ex.: Silva x Banco XYZ" value="${esc(p.titulo || '')}"></div>
+        <div class="campo"><label for="f-sei">Nº do processo SEI</label><input id="f-sei" inputmode="numeric" placeholder="Ex.: 1320.01.0012345/2026-12" value="${esc(p.sei || '')}"></div>
+      </div>
       <div class="campos-2">
         <div class="campo"><label for="f-cliente">Cliente</label><input id="f-cliente" value="${esc(p.cliente || '')}"></div>
         <div class="campo"><label for="f-contraria">Parte contrária</label><input id="f-contraria" value="${esc(p.parte_contraria || '')}"></div>
@@ -650,6 +763,7 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
         const corpo = {
           numero: $('#f-numero', m).value,
           titulo: $('#f-titulo', m).value,
+          sei: $('#f-sei', m).value,
           cliente: $('#f-cliente', m).value,
           parte_contraria: $('#f-contraria', m).value,
           tribunal: $('#f-tribunal', m).value,
@@ -712,6 +826,7 @@ async function telaProcesso(c, id, abaInicial) {
         <div class="acoes"><button class="btn pequeno" id="editar">Editar</button><button class="btn pequeno perigo" id="excluir">Excluir</button></div>
       </div>
       <dl class="dados">
+        ${p.sei ? `<div><dt>Nº SEI</dt><dd><span class="mono">${esc(p.sei)}</span> <button class="btn pequeno" id="copiar-sei" title="Copiar para colar na pesquisa do SEI">Copiar</button></dd></div>` : ''}
         ${[['Cliente', p.cliente], ['Parte contrária', p.parte_contraria], ['Tribunal', p.tribunal], ['Vara / órgão', p.orgao], ['Classe', p.classe], ['Assunto', p.assunto]]
           .filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}
       </dl>
@@ -735,20 +850,15 @@ async function telaProcesso(c, id, abaInicial) {
         ${cumprimentoAberto(p) ? '<button class="btn pequeno primario" id="marcar-cumprida">✓ Marcar como cumprida</button>' : '<button class="btn pequeno" id="reabrir-cumprimento">Reabrir (pendente)</button>'}
         <button class="btn pequeno" id="editar-cumprimento">Editar cumprimento</button>
       </div>
-      <h3 style="margin-top:1rem">Providências</h3>
-      <form id="form-prov" class="acoes" style="flex-wrap:wrap">
-        <input type="date" id="prov-data" value="${ymdLocal(new Date())}" style="width:auto" aria-label="Data">
-        <input id="prov-desc" placeholder="Ex.: Ofício enviado à Diretoria de Contratos" style="flex:1 1 240px" aria-label="Providência" required maxlength="2000">
-        <button class="btn pequeno">Registrar</button>
-      </form>
-      ${p.providencias.length ? `<ul class="lista" style="margin-top:.5rem">${p.providencias.map((pr) => `<li class="small item-linha">
-        <div class="corpo"><strong>${fmtData(pr.data)}</strong> — ${esc(pr.descricao)}</div>
-        <button class="btn pequeno perigo excluir-prov" data-id="${pr.id}" aria-label="Excluir providência">✕</button></li>`).join('')}</ul>`
-        : '<p class="small muted">Nenhuma providência registrada ainda.</p>'}
+      <div class="secao-titulo"><h3 style="margin:0">Últimas providências</h3>
+        <div class="acoes"><button class="btn pequeno" id="prov-liminar">${icone('mais')} Registrar</button>
+        ${p.providencias.length > 3 ? `<button class="btn pequeno" id="ver-provs">Ver todas (${p.providencias.length})</button>` : ''}</div></div>
+      <div class="small">${htmlProvidencias(p.providencias.slice(0, 3), { acoes: false })}</div>
     </section>` : ''}
     <div class="abas" role="tablist">
       <button data-aba="publicacoes">Publicações (${p.publicacoes.length})${naoLidasPub ? ` <span class="badge novo">${naoLidasPub}</span>` : ''}</button>
       <button data-aba="andamentos">Andamentos (${p.andamentos.length})${naoLidosAnd ? ` <span class="badge novo">${naoLidosAnd}</span>` : ''}</button>
+      <button data-aba="providencias">Providências (${p.providencias.length})</button>
       <button data-aba="lembretes">Prazos e lembretes (${p.lembretes.filter((l) => !l.concluido).length})</button>
     </div>
     <div id="conteudo-aba"></div>`;
@@ -768,6 +878,13 @@ async function telaProcesso(c, id, abaInicial) {
             <div style="font-weight:600">${esc(a.nome)} ${a.lida ? '' : '<span class="badge novo">Novo</span>'} <span class="badge" style="font-weight:500">${{ pje: 'PJe TJMG', eproc: 'eproc TJMG' }[a.fonte] || 'DataJud'}</span></div>
             ${a.complemento ? `<div class="small muted">${esc(a.complemento)}</div>` : ''}</li>`).join('')}</ul></div>`
         : `<div class="card vazio">${p.datajud_em ? 'Nenhum andamento encontrado no DataJud.' : 'Ainda não foi possível consultar o DataJud (CNJ). Os andamentos aparecerão aqui assim que ele responder.'}</div>`;
+    } else if (nome === 'providencias') {
+      alvo.innerHTML = `
+        <div class="acoes" style="margin-bottom:.75rem"><button class="btn primario" id="nova-prov">${icone('mais')} Registrar providência</button>
+          <span class="small muted">Ex.: enviado ao setor tal, solicitado cumprimento de decisão, audiência dia tal…</span></div>
+        <div class="card">${htmlProvidencias(p.providencias)}</div>`;
+      $('#nova-prov', alvo).onclick = () => formProvidencia(p.id, null, () => telaProcesso(c, id, 'providencias'));
+      ligarProvidencias(alvo, p.id, p.providencias, () => telaProcesso(c, id, 'providencias'));
     } else {
       alvo.innerHTML = `
         <div class="acoes" style="margin-bottom:.75rem"><button class="btn primario" id="novo-lemb-proc">${icone('mais')} Novo prazo / lembrete</button></div>
@@ -785,7 +902,7 @@ async function telaProcesso(c, id, abaInicial) {
     if (!(await confirmar('Marcar a liminar como cumprida? Os lembretes de prazo e de cobrança deste processo serão concluídos.'))) return;
     const hoje = ymdLocal(new Date());
     await api(`/processos/${id}`, { metodo: 'PUT', corpo: { cumprimento_situacao: 'cumprida', cumprimento_data: hoje } });
-    await api(`/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: hoje, descricao: 'Liminar marcada como cumprida.' } });
+    await api(`/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: hoje, categoria: 'cumprimento', descricao: 'Liminar marcada como cumprida.' } });
     toast('Liminar marcada como cumprida.');
     telaProcesso(c, id);
   });
@@ -794,19 +911,15 @@ async function telaProcesso(c, id, abaInicial) {
     toast('Cumprimento reaberto: lembretes reativados.');
     telaProcesso(c, id);
   });
-  $('#form-prov')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await api(`/processos/${id}/providencias`, { metodo: 'POST', corpo: { data: $('#prov-data').value, descricao: $('#prov-desc').value } });
-    toast('Providência registrada.');
-    telaProcesso(c, id);
+  $('#prov-liminar')?.addEventListener('click', () => formProvidencia(p.id, null, () => telaProcesso(c, id), { categoria: 'cumprimento' }));
+  $('#ver-provs')?.addEventListener('click', () => {
+    mostrar('providencias');
+    $('.abas', c).scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  $$('.excluir-prov', c).forEach((b) =>
-    b.addEventListener('click', async () => {
-      if (!(await confirmar('Excluir esta providência?'))) return;
-      await api(`/providencias/${b.dataset.id}`, { metodo: 'DELETE' });
-      telaProcesso(c, id);
-    }),
-  );
+  $('#copiar-sei')?.addEventListener('click', async () => {
+    await copiarTexto(p.sei);
+    toast('Número SEI copiado.');
+  });
   $('#excluir').onclick = async () => {
     if (!(await confirmar('Excluir este processo? As publicações e andamentos dele também serão removidos da lista do processo.'))) return;
     await api(`/processos/${id}`, { metodo: 'DELETE' });

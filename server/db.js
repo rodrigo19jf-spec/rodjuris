@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS processos (
   assunto TEXT,
   status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','suspenso','encerrado')),
   observacoes TEXT,
+  sei TEXT,                                -- número do processo no SEI (ex.: SEI MG)
   liminar TEXT CHECK (liminar IN ('deferida','indeferida','nao_analisada','nao_requerida')),
   cumprimento_situacao TEXT CHECK (cumprimento_situacao IN ('pendente','andamento','parcial','cumprida')),
   cumprimento_prazo TEXT,                  -- AAAA-MM-DD (data-limite fixada na decisão)
@@ -84,6 +85,8 @@ CREATE TABLE IF NOT EXISTS providencias (
   id SERIAL PRIMARY KEY,
   processo_id INTEGER NOT NULL REFERENCES processos(id) ON DELETE CASCADE,
   data TEXT NOT NULL,                      -- AAAA-MM-DD
+  hora TEXT,                               -- HH:MM (opcional; usada no lembrete)
+  categoria TEXT,                          -- envio, solicitacao, cumprimento, audiencia, reuniao, peticao, outro
   descricao TEXT NOT NULL,
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
@@ -178,6 +181,10 @@ const MIGRACOES = [
      data TEXT NOT NULL, descricao TEXT NOT NULL,
      criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});
    CREATE INDEX IF NOT EXISTS ix_providencias_processo ON providencias(processo_id, data DESC);`,
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS sei TEXT;
+   ALTER TABLE providencias ADD COLUMN IF NOT EXISTS hora TEXT;
+   ALTER TABLE providencias ADD COLUMN IF NOT EXISTS categoria TEXT;
+   UPDATE providencias SET categoria = 'cumprimento' WHERE categoria IS NULL;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

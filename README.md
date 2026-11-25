@@ -10,6 +10,11 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
 - **Receber sugestões de prazo** (eproc), sempre marcadas como "Sugestão — confirme a data":
   - **intimação pendente:** lembrete "Tomar ciência" no limite da ciência tácita (10 dias corridos, Lei 11.419/2006, art. 5º, §3º). Ele é concluído sozinho quando você abre a intimação no eproc;
   - **andamento "intimação… Prazo: N dias – Status: ABERTO" para o cliente cadastrado:** lembrete com a data mais cedo possível (ciência no mesmo dia), em dias úteis, descontando fins de semana, feriados nacionais e o recesso de 20/12 a 20/1. Não considera feriados locais nem prazos em dobro: confira sempre.
+- **Registrar providências** de cada processo, numa aba própria:
+  - cada registro tem data, hora (opcional), tipo (envio a setor, solicitação/ofício, cumprimento de decisão, audiência, reunião, petição, outro) e descrição;
+  - há um lembrete opcional na data (ex.: audiências);
+  - os registros podem ser editados e excluídos.
+- **Número do processo SEI** vinculado a cada processo judicial: botão de copiar e busca pelo número.
 - **Acompanhar o cumprimento de liminares deferidas:**
   - **situação:** pendente, em andamento, cumprida parcialmente ou cumprida;
   - **dados:** prazo para cumprimento (com calculadora em dias úteis, dias corridos ou horas), setor/responsável a cobrar e multa fixada;
