@@ -7,6 +7,7 @@ import { cnjValido, siglaTribunal, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, testarConexoes } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, testarEproc } from './eproc_mni.js';
+import { textoClasse } from './classes_cnj.js';
 import { chavesVapid, configEmail, enviarEmail, enviarPush } from './notificador.js';
 import { executarCiclo, verificarAvisosEproc, verificarProcesso, verificarTudo } from './monitor.js';
 
@@ -375,7 +376,10 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       if (eprocDisponivel(numero)) {
         try {
           const ep = await buscarProcessoEproc(numero, { fetchFn });
-          if (ep) return res.json({ ...ep, fonte: 'eproc TJMG', movimentos: ep.movimentos.slice(0, 5) });
+          if (ep) {
+            const classe = await textoClasse(req.db, ep.classeCodigo, { fetchFn });
+            return res.json({ ...ep, classe, fonte: 'eproc TJMG', movimentos: ep.movimentos.slice(0, 5) });
+          }
         } catch (err) {
           console.warn('[eproc]', err.message);
         }
@@ -563,6 +567,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       antecedencia_min: Math.max(0, Math.min(Number(body.antecedencia_min ?? 60) || 0, 60 * 24 * 30)),
       processo_id: processoId,
       concluido: body.concluido ? 1 : 0,
+      sugerido: body.sugerido === true || body.sugerido === 1 ? 1 : 0,
     };
   }
 

@@ -382,6 +382,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
     CREATE TABLE andamentos (id SERIAL PRIMARY KEY, processo_id INTEGER, external_key TEXT);
     CREATE TABLE config (chave TEXT PRIMARY KEY, valor TEXT);
     CREATE TABLE push_subscriptions (endpoint TEXT PRIMARY KEY, dados TEXT NOT NULL);
+    CREATE TABLE lembretes (id SERIAL PRIMARY KEY, titulo TEXT NOT NULL, data_hora TEXT NOT NULL, concluido INTEGER NOT NULL DEFAULT 0);
     INSERT INTO processos (numero, ultima_verificacao) VALUES ('1', '2026-11-01T00:00:00.000Z'), ('2', NULL);
     INSERT INTO andamentos (processo_id, external_key) VALUES (1, 'x');`);
   await antigo.close();
@@ -390,7 +391,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '3');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '4');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -630,4 +631,123 @@ test('eproc MNI: decodifica respostas em UTF-8 e em ISO-8859-1', async () => {
   assert.match(decodificar(Buffer.from(xml('UTF-8'), 'utf8')), /Órgão Cível/);
   assert.match(decodificar(Buffer.from(xml('ISO-8859-1'), 'latin1')), /Órgão Cível/);
   assert.match(decodificar(Buffer.from('<a>Órgão</a>', 'latin1'), 'text/xml; charset=ISO-8859-1'), /Órgão/);
+});
+
+// ───────── Melhorias: nomes das classes e sugestões de prazo ─────────
+test('prazos: dias úteis com fins de semana, feriados nacionais e recesso de 20/12 a 20/1', async () => {
+  const { vencimentoDiasUteis, feriadosNacionais, pascoa, parteEhCliente, lerIntimacaoComPrazo, somarDiasCorridos } = await import('../server/prazos.js');
+  assert.equal(pascoa(2026).toISOString().slice(0, 10), '2026-04-05');
+  const f = feriadosNacionais(2026);
+  for (const d of ['2026-02-16', '2026-02-17', '2026-04-03', '2026-06-04', '2026-11-20', '2026-04-21']) assert.ok(f.has(d), d);
+  // Ciência na quarta 11/11/2026: 15 dias úteis, pulando 15/11 (domingo) e 20/11 (sexta, feriado) → 03/12/2026.
+  assert.equal(vencimentoDiasUteis('2026-11-11', 15), '2026-12-03');
+  // Ciência na sexta: o prazo começa na segunda.
+  assert.equal(vencimentoDiasUteis('2026-11-27', 1), '2026-11-30');
+  // Atravessa o recesso: ciência em 18/12/2026 (sexta), 5 dias úteis → 21/12 a 20/1 suspensos → 27/01/2027.
+  assert.equal(vencimentoDiasUteis('2026-12-18', 5), '2027-01-27');
+  assert.equal(somarDiasCorridos('2026-11-25', 10), '2026-12-05');
+
+  assert.ok(parteEhCliente('CONSORCIO IGC CETUS', 'Consórcio IGC Cetus Ltda'));
+  assert.ok(parteEhCliente('FUNDACAO HOSPITALAR DO ESTADO DE MINAS GERAIS - FHEMIG', 'FHEMIG'));
+  assert.ok(!parteEhCliente('CONSORCIO IGC CETUS', 'FHEMIG'));
+
+  const lida = lerIntimacaoComPrazo({
+    nome: 'Expedida/certificada a intimação eletrônica',
+    complemento: 'Refer. ao Evento 31; Movimentado por: FULANA - USUÁRIO EPROC; Prazo:15 dias - Status: ABERTO - Parte: CONSORCIO IGC CETUS (IMPETRANTE)',
+  });
+  assert.deepEqual(lida, { dias: 15, parte: 'CONSORCIO IGC CETUS' });
+  assert.equal(lerIntimacaoComPrazo({ nome: 'Ato ordinatório praticado', complemento: 'Prazo:15 dias - Status: ABERTO' }), null);
+  assert.equal(lerIntimacaoComPrazo({ nome: 'Expedida/certificada a intimação eletrônica', complemento: 'Prazo:15 dias - Status: FECHADO' }), null);
+});
+
+test('classes CNJ: nomes conhecidos, consulta ao SGT com cache e texto provisório', async () => {
+  const { nomeClasse, textoClasse } = await import('../server/classes_cnj.js');
+  let chamadas = 0;
+  const sgt = async (url) => {
+    chamadas++;
+    assert.match(url, /sgt\.cloud\.cnj\.jus\.br/, 'usa o endereço novo do SGT');
+    return { ok: true, text: async () => '<ns1:Item><cod_item>1707</cod_item><cod_item_pai>1</cod_item_pai><nome>Reintegração / Manutenção de Posse</nome></ns1:Item>' };
+  };
+  assert.equal(await nomeClasse(db, 120, { fetchFn: sgt }), 'Mandado de Segurança Cível');
+  assert.equal(chamadas, 0, 'classe comum não consulta o CNJ');
+  assert.equal(await nomeClasse(db, 1707, { fetchFn: sgt }), 'Reintegração / Manutenção de Posse');
+  assert.equal(await nomeClasse(db, 1707, { fetchFn: sgt }), 'Reintegração / Manutenção de Posse');
+  assert.equal(chamadas, 1, 'guarda no banco');
+  const fora = async () => ({ ok: false, text: async () => '' });
+  assert.equal(await textoClasse(db, 99999, { fetchFn: fora }), 'Classe CNJ 99999');
+});
+
+test('eproc: classe com nome oficial e sugestão de prazo só para intimação do cliente', async () => {
+  const { verificarProcesso } = await import('../server/monitor.js');
+  const antigo = { u: process.env.EPROC_USUARIO, s: process.env.EPROC_SENHA };
+  process.env.EPROC_USUARIO = 'usuario-teste';
+  process.env.EPROC_SENHA = 'senha-teste';
+  try {
+    await db.run("DELETE FROM config WHERE chave = 'datajud_pausa_ate'");
+    const NUM_EP = gerarCnj(1212121, '2026', '8', '13', '0024');
+    djen.porProcesso[NUM_EP] = [];
+    pjeTjmg.processos = {};
+    mni.processos = { [NUM_EP]: [['20261101100000', 'Distribuído por sorteio', 'x1']] };
+    // Cadastro antigo com o texto provisório da classe: deve ser trocado pelo nome oficial.
+    let p = await db.get('INSERT INTO processos (numero, titulo, cliente, classe) VALUES (?, ?, ?, ?) RETURNING *', NUM_EP, 'MS Cetus', 'FHEMIG', 'Classe CNJ 7');
+    await verificarProcesso(db, p, { fetchFn: fetchComEproc });
+    p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+    assert.equal(p.classe, 'Procedimento Comum Cível');
+
+    const intim = (parte, id, quando) => [quando, 'Expedida/certificada a intimação eletrônica', id, parte];
+    mni.processos[NUM_EP].push(intim('CONSORCIO IGC CETUS (IMPETRANTE)', 'x2', '20261111093900'));
+    mni.processos[NUM_EP].push(intim('FUNDACAO HOSPITALAR DO ESTADO DE MINAS GERAIS - FHEMIG (IMPETRADO)', 'x3', '20261111094500'));
+    // O simulador do MNI põe a parte no complemento:
+    const original = fetchComEproc;
+    const comParte = async (url, init) => {
+      const r = await original(url, init);
+      if (!String(url).includes('eproc1g-ws')) return r;
+      const xml = new TextDecoder().decode(await r.arrayBuffer()).replace(
+        /<ns3:movimento dataHora="(\d+)" identificadorMovimento="(x2|x3)"><ns3:movimentoLocal codigoMovimento="1" descricao="([^"]+)"\/><\/ns3:movimento>/g,
+        (m, dh, id, desc) => {
+          const parte = mni.processos[NUM_EP].find((x) => x[2] === id)[3];
+          return `<ns3:movimento dataHora="${dh}" identificadorMovimento="${id}"><ns3:complemento>Prazo:15 dias - Status: ABERTO - Parte: ${parte}</ns3:complemento><ns3:movimentoLocal codigoMovimento="1" descricao="${desc}"/></ns3:movimento>`;
+        },
+      );
+      return xmlResposta(xml);
+    };
+    p = await db.get('SELECT * FROM processos WHERE id = ?', p.id);
+    await verificarProcesso(db, p, { fetchFn: comParte });
+    const sug = await db.all('SELECT * FROM lembretes WHERE processo_id = ? AND sugerido = 1', p.id);
+    assert.equal(sug.length, 1, 'só a intimação da FHEMIG (cliente) gera sugestão');
+    assert.equal(sug[0].tipo, 'prazo');
+    assert.equal(sug[0].data_hora, '2026-12-03T21:00:00.000Z', '15 dias úteis a partir de 11/11/2026, às 18h');
+    assert.match(sug[0].descricao, /FHEMIG/);
+    assert.ok(await db.get("SELECT 1 FROM notificacoes WHERE titulo LIKE '1 sugestão(ões) de prazo%'"));
+
+    // Repetir a verificação não duplica a sugestão.
+    await verificarProcesso(db, await db.get('SELECT * FROM processos WHERE id = ?', p.id), { fetchFn: comParte });
+    assert.equal(await db.valor('SELECT COUNT(*)::int FROM lembretes WHERE processo_id = ? AND sugerido = 1', p.id), 1);
+
+    // Confirmar pela API.
+    const r = await req(`/api/lembretes/${sug[0].id}`, { metodo: 'PUT', corpo: { sugerido: false } });
+    assert.equal(r.corpo.sugerido, 0);
+    await db.run('DELETE FROM processos WHERE id = ?', p.id);
+  } finally {
+    if (antigo.u === undefined) delete process.env.EPROC_USUARIO; else process.env.EPROC_USUARIO = antigo.u;
+    if (antigo.s === undefined) delete process.env.EPROC_SENHA; else process.env.EPROC_SENHA = antigo.s;
+  }
+});
+
+test('eproc: intimação pendente sugere "Tomar ciência" (10 dias corridos) e conclui sozinho após a ciência', async () => {
+  const { verificarAvisosEproc } = await import('../server/monitor.js');
+  const env = { EPROC_USUARIO: 'usuario-teste', EPROC_SENHA: 'senha-teste' };
+  await db.run("DELETE FROM config WHERE chave = 'eproc_avisos_em'");
+  await db.run('DELETE FROM avisos_eproc');
+  const NUM_A = gerarCnj(3434343, '2026', '8', '13', '0024');
+  mni.avisos = [['p1', NUM_A, 'I', '20261120100000']];
+  await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env }); // 1ª leitura: cria a sugestão, sem aviso
+  let l = await db.get("SELECT * FROM lembretes WHERE origem = '1|p1' OR origem = 'aviso|1|p1'");
+  assert.ok(l, 'pendência já existente também ganha sugestão');
+  assert.equal(l.data_hora, '2026-11-30T12:00:00.000Z', '20/11 + 10 dias corridos = 30/11, às 9h');
+  assert.equal(l.sugerido, 1);
+  mni.avisos = []; // você abriu a intimação no eproc
+  await verificarAvisosEproc(db, { fetchFn: fetchComEproc, env, forcar: true });
+  l = await db.get('SELECT concluido FROM lembretes WHERE id = ?', l.id);
+  assert.equal(l.concluido, 1, 'lembrete concluído automaticamente');
 });

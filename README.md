@@ -7,6 +7,9 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
 - **Acompanhar andamentos:**
   - processos do **TJMG no PJe:** lidos direto da **Consulta Pública do PJe**, mais rápido, sem esperar o DataJud. O app detecta quando o processo é migrado para o eproc;
   - demais processos: pelo **DataJud** (API Pública do CNJ), com novas tentativas automáticas quando ele estiver instável.
+- **Receber sugestões de prazo** (eproc), sempre marcadas como "Sugestão — confirme a data":
+  - **intimação pendente:** lembrete "Tomar ciência" no limite da ciência tácita (10 dias corridos, Lei 11.419/2006, art. 5º, §3º). Ele é concluído sozinho quando você abre a intimação no eproc;
+  - **andamento "intimação… Prazo: N dias – Status: ABERTO" para o cliente cadastrado:** lembrete com a data mais cedo possível (ciência no mesmo dia), em dias úteis, descontando fins de semana, feriados nacionais e o recesso de 20/12 a 20/1. Não considera feriados locais nem prazos em dobro: confira sempre.
 - **Cadastrar lembretes e prazos:** tipos prazo, audiência, reunião e lembrete, com aviso antecipado (na hora, 15 min, 1 h, 1 dia, 1 semana…).
 - **Usar a agenda:** calendário mensal com todos os compromissos.
 - **Receber avisos** dentro do app (sininho), **por e-mail** e por **notificação no celular** (push).
@@ -135,6 +138,8 @@ api/index.js      ponto de entrada na Vercel (todas as rotas /api)
   cnj.js          número CNJ: validação, formatação, tribunal
   pje_tjmg.js     leitura da Consulta Pública do PJe do TJMG (desligue com PJE_TJMG=0)
   eproc_mni.js    webservice oficial do eproc do TJMG (MNI 2.2.2), só leitura
+  classes_cnj.js  nomes oficiais das classes (TPU/SGT do CNJ), guardados no banco
+  prazos.js       estimativa de prazos em dias úteis (para sugestões)
   fontes.js       clientes DJEN (Comunica PJe) e DataJud
   monitor.js      verificação de publicações, andamentos e lembretes
   notificador.js  avisos no app, e-mail (nodemailer) e push (web-push)

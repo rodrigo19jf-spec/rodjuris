@@ -91,9 +91,12 @@ CREATE TABLE IF NOT EXISTS lembretes (
   processo_id INTEGER REFERENCES processos(id) ON DELETE SET NULL,
   concluido INTEGER NOT NULL DEFAULT 0,
   notificado_em TEXT,
+  sugerido INTEGER NOT NULL DEFAULT 0,     -- 1 = criado automaticamente, aguardando sua confirmação
+  origem TEXT,                             -- de onde veio a sugestão (evita duplicar)
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
 CREATE INDEX IF NOT EXISTS ix_lembretes_data ON lembretes(data_hora);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_lembretes_origem ON lembretes(origem);
 
 CREATE TABLE IF NOT EXISTS notificacoes (
   id SERIAL PRIMARY KEY,
@@ -140,6 +143,9 @@ const MIGRACOES = [
    CREATE TABLE IF NOT EXISTS avisos_eproc (
      id TEXT PRIMARY KEY, numero_processo TEXT, tipo TEXT, disponibilizado_em TEXT,
      criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL});`,
+  `ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS sugerido INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE lembretes ADD COLUMN IF NOT EXISTS origem TEXT;
+   CREATE UNIQUE INDEX IF NOT EXISTS ux_lembretes_origem ON lembretes(origem);`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

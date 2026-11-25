@@ -177,7 +177,8 @@ export async function buscarProcessoEproc(numero, { fetchFn = fetch, env = proce
     return {
       tribunal: 'TJMG',
       grau,
-      classe: texto(db['@classeProcessual']) ? `Classe CNJ ${texto(db['@classeProcessual'])}` : null,
+      classe: null,
+      classeCodigo: texto(db['@classeProcessual']) || null,
       assunto: assuntos.join(', ') || null,
       orgao: texto(orgao['@nomeOrgao']) || null,
       movimentos,

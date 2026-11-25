@@ -3,6 +3,8 @@ import { formatarCnj, somenteDigitos } from './cnj.js';
 import { buscarProcessoDataJud, buscarPublicacoesDjen } from './fontes.js';
 import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, listarAvisosPendentesEproc } from './eproc_mni.js';
+import { textoClasse } from './classes_cnj.js';
+import { dataBrasilia, isoBrasilia, lerIntimacaoComPrazo, parteEhCliente, somarDiasCorridos, vencimentoDiasUteis } from './prazos.js';
 import { formatarDataHora, notificar } from './notificador.js';
 
 const DIA = 86_400_000;
@@ -109,6 +111,52 @@ function deveConsultarPje(processo) {
   return true;
 }
 
+/**
+ * Sugere lembretes de prazo a partir de intimações com prazo em aberto nos andamentos (eproc).
+ * Só sugere quando a parte intimada corresponde ao cliente cadastrado (ou se o cliente não foi informado).
+ * A data é a MAIS CEDO possível (ciência no próprio dia da expedição) e sempre precisa ser confirmada.
+ */
+export async function sugerirPrazosDeAndamentos(db, processo, andamentos) {
+  let criados = 0;
+  for (const a of andamentos) {
+    const intimacao = lerIntimacaoComPrazo(a);
+    if (!intimacao || !a.data) continue;
+    const semCliente = !processo.cliente;
+    if (!semCliente && intimacao.parte && !parteEhCliente(intimacao.parte, processo.cliente)) continue;
+    const ciencia = dataBrasilia(a.data);
+    const vencimento = vencimentoDiasUteis(ciencia, intimacao.dias);
+    const descricao = [
+      `Sugestão automática a partir do andamento de ${formatarDataHora(a.data)}: "${a.nome}".`,
+      intimacao.parte ? `Parte intimada: ${intimacao.parte}.` : null,
+      semCliente ? '⚠️ O cliente não está cadastrado neste processo: verifique se a intimação é para o seu cliente.' : null,
+      `Estimativa: ${intimacao.dias} dias úteis contados como se a ciência fosse no mesmo dia (${ciencia.split('-').reverse().join('/')}). Se a ciência ocorrer depois, o prazo final também será mais tarde.`,
+      'Não considera feriados locais, suspensões do tribunal nem prazos em dobro (Fazenda Pública, Defensoria etc.). Confira e ajuste a data.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const r = await db.run(
+      `INSERT INTO lembretes (titulo, descricao, tipo, data_hora, antecedencia_min, processo_id, sugerido, origem)
+       VALUES (?, ?, 'prazo', ?, 2880, ?, 1, ?) ON CONFLICT (origem) DO NOTHING`,
+      `Prazo de ${intimacao.dias} dias — ${processo.titulo || formatarCnj(processo.numero)}`,
+      descricao,
+      isoBrasilia(vencimento, '18:00'),
+      processo.id,
+      `andamento|${processo.id}|${a.external_key}`,
+    );
+    if (r.rowCount > 0) criados++;
+  }
+  if (criados > 0) {
+    await notificar(db, {
+      tipo: 'lembrete',
+      titulo: `${criados} sugestão(ões) de prazo — ${processo.titulo || formatarCnj(processo.numero)}`,
+      mensagem: 'Confira a data e confirme em Lembretes.',
+      link: '/#/lembretes',
+      emailTexto: `O RodJuris identificou intimação com prazo em aberto no processo ${formatarCnj(processo.numero)} e criou ${criados} sugestão(ões) de lembrete de prazo.\n\nAs datas são estimativas: confira e confirme em Lembretes.`,
+    });
+  }
+  return criados;
+}
+
 function deveConsultarEproc(processo) {
   if (processo.eproc_situacao !== 'ausente') return true;
   return !processo.eproc_verificado_em || Date.now() - new Date(processo.eproc_verificado_em).getTime() > DIAS_RECHECAR_PJE_AUSENTE * DIA;
@@ -118,7 +166,7 @@ async function preencherCadastro(db, processoId, dados) {
   await db.run(
     `UPDATE processos SET
        tribunal = COALESCE(NULLIF(tribunal, ''), ?),
-       classe   = COALESCE(NULLIF(classe, ''), ?),
+       classe   = CASE WHEN classe IS NULL OR classe = '' OR classe LIKE 'Classe CNJ %' THEN COALESCE(?, classe) ELSE classe END,
        orgao    = COALESCE(NULLIF(orgao, ''), ?),
        assunto  = COALESCE(NULLIF(assunto, ''), ?)
      WHERE id = ?`,
@@ -196,8 +244,11 @@ export async function verificarProcesso(
       } else {
         const baseDoEproc = !processo.eproc_em;
         const novos = await gravarAndamentos(db, processo.id, ep.movimentos, { linhaDeBase: baseDoEproc, fonte: 'eproc' });
-        if (!baseDoEproc) avisosAndamentos.push(...novos);
-        await preencherCadastro(db, processo.id, ep);
+        if (!baseDoEproc) {
+          avisosAndamentos.push(...novos);
+          if (avisar) await sugerirPrazosDeAndamentos(db, processo, novos);
+        }
+        await preencherCadastro(db, processo.id, { ...ep, classe: await textoClasse(db, ep.classeCodigo, { fetchFn }) });
         await db.run(
           "UPDATE processos SET eproc_situacao = 'ativo', eproc_em = COALESCE(eproc_em, ?), eproc_verificado_em = ? WHERE id = ?",
           agora,
@@ -465,15 +516,33 @@ export async function verificarAvisosEproc(db, { fetchFn = fetch, forcar = false
   // Os que não estão mais pendentes (você já abriu no eproc) saem da lista.
   const atuais = new Set(avisos.map((a) => a.id));
   for (const { id } of await db.all('SELECT id FROM avisos_eproc')) {
-    if (!atuais.has(id)) await db.run('DELETE FROM avisos_eproc WHERE id = ?', id);
+    if (!atuais.has(id)) {
+      await db.run('DELETE FROM avisos_eproc WHERE id = ?', id);
+      // Ciência registrada no eproc: conclui o lembrete "Tomar ciência" correspondente.
+      await db.run('UPDATE lembretes SET concluido = 1 WHERE origem = ? AND concluido = 0', `aviso|${id}`);
+    }
   }
   await setConfig(db, 'eproc_avisos_em', agoraIso());
 
-  if (!linhaDeBase) {
+  {
     for (const a of novos) {
       const proc = await db.get('SELECT id, titulo, cliente FROM processos WHERE numero = ?', a.numero_processo);
       const nome = proc ? proc.titulo || proc.cliente || formatarCnj(a.numero_processo) : formatarCnj(a.numero_processo);
       const tipo = { I: 'Intimação', C: 'Citação', N: 'Notificação', V: 'Vista' }[a.tipo] || 'Comunicação';
+      if (a.disponibilizado_em) {
+        // Ciência tácita: 10 dias corridos após a disponibilização (Lei 11.419/2006, art. 5º, §3º).
+        const limite = somarDiasCorridos(dataBrasilia(a.disponibilizado_em), 10);
+        await db.run(
+          `INSERT INTO lembretes (titulo, descricao, tipo, data_hora, antecedencia_min, processo_id, sugerido, origem)
+           VALUES (?, ?, 'prazo', ?, 1440, ?, 1, ?) ON CONFLICT (origem) DO NOTHING`,
+          `Tomar ciência: ${tipo.toLowerCase()} no eproc — ${nome}`,
+          `${tipo} disponibilizada no eproc em ${formatarDataHora(a.disponibilizado_em)}.\nSe você não abrir antes, a ciência é considerada automaticamente ao fim de 10 dias corridos (Lei 11.419/2006, art. 5º, §3º) — e o prazo começa a contar.\nSugestão automática: confira e confirme.`,
+          isoBrasilia(limite, '09:00'),
+          proc?.id ?? null,
+          `aviso|${a.id}`,
+        );
+      }
+      if (linhaDeBase) continue; // pendências que já existiam: só a sugestão, sem aviso
       await notificar(db, {
         tipo: 'publicacao',
         titulo: `${tipo} pendente no eproc — ${nome}`,

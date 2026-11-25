@@ -298,12 +298,15 @@ function htmlLembrete(l, { mostrarProcesso = true } = {}) {
       <div class="item-linha">
         <input type="checkbox" class="concluir" data-id="${l.id}" ${l.concluido ? 'checked' : ''} aria-label="Concluído" style="width:20px;height:20px;min-height:0;margin-top:2px">
         <div class="corpo">
-          <div class="titulo">${esc(l.titulo)}</div>
+          <div class="titulo">${esc(l.titulo)} ${l.sugerido ? '<span class="badge aviso">Sugestão — confirme a data</span>' : ''}</div>
           <div class="small quando">${esc(TIPOS[l.tipo] || 'Lembrete')} · ${fmtDataHora(l.data_hora)} <span class="muted">(${relativo(l.data_hora)})</span></div>
           ${mostrarProcesso && l.processo_numero ? `<div class="small"><a href="#/processos/${l.processo_id}">${esc(l.processo_titulo || formatarCnj(l.processo_numero))}</a></div>` : ''}
-          ${l.descricao ? `<div class="small muted">${esc(l.descricao)}</div>` : ''}
+          ${l.descricao ? `<div class="small muted" style="white-space:pre-line">${esc(l.descricao)}</div>` : ''}
         </div>
-        <button class="btn pequeno editar-lembrete" data-id="${l.id}">Editar</button>
+        <div class="acoes" style="flex-direction:column;align-items:stretch;gap:.35rem">
+          ${l.sugerido ? `<button class="btn pequeno primario confirmar-lembrete" data-id="${l.id}">Confirmar</button>` : ''}
+          <button class="btn pequeno editar-lembrete" data-id="${l.id}">Editar</button>
+        </div>
       </div>
     </div>`;
 }
@@ -313,6 +316,13 @@ function ligarLembretes(raiz, lista, aoMudar) {
     cb.addEventListener('change', async () => {
       await api(`/lembretes/${cb.dataset.id}`, { metodo: 'PUT', corpo: { concluido: cb.checked } });
       toast(cb.checked ? 'Lembrete concluído.' : 'Lembrete reaberto.');
+      aoMudar();
+    }),
+  );
+  $$('.confirmar-lembrete', raiz).forEach((b) =>
+    b.addEventListener('click', async () => {
+      await api(`/lembretes/${b.dataset.id}`, { metodo: 'PUT', corpo: { sugerido: false } });
+      toast('Prazo confirmado.');
       aoMudar();
     }),
   );
@@ -747,6 +757,7 @@ async function formLembrete(l = null, aoSalvar) {
           data_hora: dataHora.toISOString(),
           processo_id: $('#l-proc', m).value || null,
           descricao: $('#l-desc', m).value,
+          sugerido: false, // salvar pelo formulário = data conferida
         };
         try {
           await api(editando ? `/lembretes/${base.id}` : '/lembretes', { metodo: editando ? 'PUT' : 'POST', corpo });
