@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS anotacoes (
   atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );
 
+CREATE TABLE IF NOT EXISTS fluxos (
+  id SERIAL PRIMARY KEY,
+  titulo TEXT NOT NULL,
+  categoria TEXT,                          -- assunto (subdivisão)
+  passos TEXT,                             -- um passo por linha
+  texto TEXT,                              -- regras, observações, exceções
+  referencias TEXT,                        -- base legal, normativos, links, SEI modelo
+  favorito INTEGER NOT NULL DEFAULT 0,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
+  atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);
+
 CREATE TABLE IF NOT EXISTS config (
   chave TEXT PRIMARY KEY,
   valor TEXT
@@ -239,6 +251,18 @@ const MIGRACOES = [
    UPDATE lembretes SET origem = 'aud|' || a.id
      FROM audiencias a WHERE a.processo_antigo IS NOT NULL AND lembretes.origem = 'audiencia|' || a.processo_antigo;
    UPDATE processos SET audiencia_data = NULL, audiencia_hora = NULL, audiencia_descricao = NULL WHERE audiencia_data IS NOT NULL;`,
+  // Fluxos e orientações de trabalho.
+  `CREATE TABLE IF NOT EXISTS fluxos (
+  id SERIAL PRIMARY KEY,
+  titulo TEXT NOT NULL,
+  categoria TEXT,                          -- assunto (subdivisão)
+  passos TEXT,                             -- um passo por linha
+  texto TEXT,                              -- regras, observações, exceções
+  referencias TEXT,                        -- base legal, normativos, links, SEI modelo
+  favorito INTEGER NOT NULL DEFAULT 0,
+  criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
+  atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
+);`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

@@ -277,6 +277,7 @@ const ICONES = {
   lembretes: '<path d="M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zM18 16V11a6 6 0 1 0-12 0v5l-2 2h16z"/>',
   audiencias: '<path d="M12 3v3M5 21h14M7 21V11h10v10M4 11h16L12 6z"/>',
   anotacoes: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  fluxos: '<path d="M10 6h11M10 12h11M10 18h11"/><path d="M3 6l1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/>',
   config: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   sino: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
   atualizar: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
@@ -377,12 +378,13 @@ function telaLogin(configurado) {
 const MENU = [
   // [endereço, ícone, nome, nome curto (menu inferior do celular)]
   ['#/', 'painel', 'Painel', 'Painel'],
-  ['#/processos', 'processos', 'Processos', 'Processos'],
+  ['#/processos', 'processos', 'Processos', 'Proc.'],
   ['#/publicacoes', 'publicacoes', 'Publicações', 'Publ.'],
   ['#/agenda', 'agenda', 'Agenda', 'Agenda'],
   ['#/lembretes', 'lembretes', 'Lembretes', 'Lembr.'],
   ['#/audiencias', 'audiencias', 'Audiências', 'Audiên.'],
   ['#/anotacoes', 'anotacoes', 'Anotações', 'Notas'],
+  ['#/fluxos', 'fluxos', 'Fluxos e orientações', 'Fluxos'],
   ['#/config', 'config', 'Ajustes', 'Ajustes'],
 ];
 
@@ -476,6 +478,7 @@ async function rotear() {
     else if (raiz === 'agenda') await telaAgenda(c);
     else if (raiz === 'lembretes') await telaLembretes(c);
     else if (raiz === 'anotacoes') await telaAnotacoes(c);
+    else if (raiz === 'fluxos') await telaFluxos(c);
     else if (raiz === 'audiencias') await telaAudiencias(c);
     else if (raiz === 'sei') await telaSei(c);
     else if (raiz === 'config') await telaConfig(c);
@@ -1255,6 +1258,264 @@ async function telaAudiencias(c) {
       toast('Copiado.');
     }),
   );
+}
+
+// ───────────── fluxos e orientações de trabalho ─────────────
+/** Formatação simples e segura: **negrito**, linhas com "-" viram lista e endereços viram links. */
+function formatarLinha(l) {
+  return esc(l)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/(https?:\/\/[^\s<"]+[^\s<".,;:)])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+}
+function textoFormatado(t) {
+  if (!t) return '';
+  const linha = formatarLinha;
+  const out = [];
+  let lista = [];
+  const fecharLista = () => {
+    if (lista.length) out.push(`<ul>${lista.map((x) => `<li>${x}</li>`).join('')}</ul>`);
+    lista = [];
+  };
+  for (const l of String(t).split('\n')) {
+    const m = l.match(/^\s*[-*•]\s+(.*)$/);
+    if (m) {
+      lista.push(linha(m[1]));
+      continue;
+    }
+    fecharLista();
+    out.push(l.trim() ? `<p>${linha(l)}</p>` : '');
+  }
+  fecharLista();
+  return `<div class="texto-formatado">${out.join('')}</div>`;
+}
+
+const passosDe = (f) => (f.passos || '').split('\n').filter(Boolean);
+
+function formFluxo(f = null, aoSalvar, categoriasExistentes = [], categoriaPadrao = '') {
+  const editando = !!f?.id;
+  const base = f || { categoria: categoriaPadrao };
+  abrirModal(editando ? 'Editar fluxo' : 'Novo fluxo / orientação', `
+    <form id="form-fluxo">
+      <div class="campo"><label for="f-titulo">Título *</label><input id="f-titulo" required maxlength="300" placeholder="Ex.: Cumprimento de liminar – medicamentos" value="${esc(base.titulo || '')}"></div>
+      <div class="campo"><label for="f-cat">Assunto</label>
+        <input id="f-cat" list="lista-cat-fluxos" maxlength="80" placeholder="Ex.: Liminares, Prazos, SEI, Contratos…" value="${esc(base.categoria || '')}">
+        <datalist id="lista-cat-fluxos">${categoriasExistentes.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+        <div class="ajuda">Funciona como uma pasta: escolha um existente ou digite um novo.</div></div>
+      <div class="campo"><label for="f-passos">Passo a passo</label>
+        <textarea id="f-passos" rows="7" maxlength="30000" placeholder="Um passo por linha. Ex.:&#10;Abrir processo SEI do tipo X&#10;Enviar ao setor Y com o ofício Z&#10;Acompanhar resposta em 5 dias">${esc(passosDe(base).join('\n'))}</textarea>
+        <div class="ajuda">Escreva um passo por linha; a numeração é automática.</div></div>
+      <div class="campo"><label for="f-texto">Regras e orientações</label>
+        <textarea id="f-texto" rows="6" maxlength="30000" placeholder="Regras, observações, exceções, cuidados…&#10;Dica: **texto** fica em negrito e linhas começando com - viram lista.">${esc(base.texto || '')}</textarea></div>
+      <div class="campo"><label for="f-ref">Referências</label>
+        <textarea id="f-ref" rows="3" maxlength="10000" placeholder="Base legal, portarias, nº SEI de modelo, links de normativos…">${esc(base.referencias || '')}</textarea></div>
+      <label class="check"><input type="checkbox" id="f-fav" ${base.favorito ? 'checked' : ''}> ⭐ Favorito (aparece no topo)</label>
+      <div id="erro-fluxo" class="alerta-caixa erro" hidden style="margin-top:.75rem"></div>
+      <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
+    </form>`, {
+    aoAbrir: (m, fechar) => {
+      $('#form-fluxo', m).onsubmit = async (e) => {
+        e.preventDefault();
+        const corpo = {
+          titulo: $('#f-titulo', m).value,
+          categoria: $('#f-cat', m).value,
+          passos: $('#f-passos', m).value,
+          texto: $('#f-texto', m).value,
+          referencias: $('#f-ref', m).value,
+          favorito: $('#f-fav', m).checked,
+        };
+        try {
+          await api(editando ? `/fluxos/${base.id}` : '/fluxos', { metodo: editando ? 'PUT' : 'POST', corpo });
+          fechar();
+          toast(editando ? 'Fluxo atualizado.' : 'Fluxo salvo.');
+          aoSalvar?.();
+        } catch (err) {
+          const caixa = $('#erro-fluxo', m);
+          caixa.textContent = err.message;
+          caixa.hidden = false;
+        }
+      };
+    },
+  });
+}
+
+/** Texto do fluxo para copiar (colar em e-mail, despacho, Word…). */
+function fluxoComoTexto(f) {
+  const partes = [f.titulo];
+  if (f.categoria) partes.push(`Assunto: ${f.categoria}`);
+  const passos = passosDe(f);
+  if (passos.length) partes.push('Passo a passo:\n' + passos.map((x, i) => `${i + 1}. ${x}`).join('\n'));
+  if (f.texto) partes.push('Regras e orientações:\n' + f.texto);
+  if (f.referencias) partes.push('Referências:\n' + f.referencias);
+  return partes.join('\n\n');
+}
+
+function verFluxo(f, { aoEditar, aoExcluir }) {
+  const passos = passosDe(f);
+  abrirModal(f.titulo, `
+    <div class="fluxo-detalhe">
+      ${f.categoria ? `<p class="small" style="margin-top:0"><span class="badge">📁 ${esc(f.categoria)}</span>${f.favorito ? ' <span class="badge aviso">⭐ Favorito</span>' : ''}</p>` : ''}
+      ${passos.length ? `<h3>Passo a passo</h3><ol class="fluxo-passos">${passos.map((x) => `<li>${formatarLinha(x)}</li>`).join('')}</ol>` : ''}
+      ${f.texto ? `<h3>Regras e orientações</h3>${textoFormatado(f.texto)}` : ''}
+      ${f.referencias ? `<h3>Referências</h3>${textoFormatado(f.referencias)}` : ''}
+      ${!passos.length && !f.texto && !f.referencias ? '<p class="muted">Ainda sem conteúdo. Clique em Editar para escrever.</p>' : ''}
+      <p class="small muted">Atualizado em ${fmtDataHora(f.atualizado_em)}</p>
+    </div>
+    <footer>
+      <button type="button" class="btn perigo" id="fx-excluir">Excluir</button>
+      <button type="button" class="btn" id="fx-copiar">Copiar texto</button>
+      <button type="button" class="btn primario" id="fx-editar">Editar</button>
+    </footer>`, {
+    aoAbrir: (m, fechar) => {
+      $('#fx-copiar', m).onclick = () => {
+        copiarAgora(fluxoComoTexto(f));
+        toast('Fluxo copiado.');
+      };
+      $('#fx-editar', m).onclick = () => {
+        fechar();
+        aoEditar();
+      };
+      $('#fx-excluir', m).onclick = async () => {
+        fechar();
+        aoExcluir();
+      };
+    },
+  });
+}
+
+/** Janela para renomear, juntar ou remover assuntos dos fluxos. */
+function organizarAssuntosFluxos(cats, aoMudar) {
+  abrirModal('Organizar assuntos', `
+    <p class="small muted" style="margin-top:0">Renomeie para corrigir ou padronizar. Para <strong>juntar</strong> dois assuntos, renomeie um com o nome exato do outro. Ao remover, os fluxos vão para "Sem assunto" (nada é apagado).</p>
+    <ul class="lista">${cats.categorias.map((x) => `<li class="item-linha" data-cat="${esc(x.nome)}">
+      <div class="corpo"><input class="novo-nome" value="${esc(x.nome)}" aria-label="Novo nome para ${esc(x.nome)}" maxlength="80">
+        <div class="small muted">${x.total} fluxo(s)</div></div>
+      <div class="acoes" style="flex-wrap:nowrap"><button class="btn pequeno salvar-tipo">Salvar</button><button class="btn pequeno perigo remover-tipo">Remover</button></div>
+    </li>`).join('')}</ul>
+    <footer><button type="button" class="btn" data-fechar>Fechar</button></footer>`, {
+    aoAbrir: (m, fechar) => {
+      const renomear = async (de, para) => {
+        const r = await api('/fluxos-categorias/renomear', { metodo: 'POST', corpo: { de, para } });
+        toast(para ? `${r.alteradas} fluxo(s) agora em "${r.para}".` : `${r.alteradas} fluxo(s) movidos para "Sem assunto".`);
+        fechar();
+        aoMudar();
+      };
+      $$('.salvar-tipo', m).forEach((b) =>
+        b.addEventListener('click', () => {
+          const li = b.closest('li');
+          const novo = $('.novo-nome', li).value.trim();
+          if (!novo || novo === li.dataset.cat) return;
+          renomear(li.dataset.cat, novo);
+        }),
+      );
+      $$('.remover-tipo', m).forEach((b) => b.addEventListener('click', () => renomear(b.closest('li').dataset.cat, '')));
+    },
+  });
+}
+
+let filtroFluxo = ''; // '' = todos; '__sem' = sem assunto
+async function telaFluxos(c) {
+  definirTopo('Fluxos e orientações', { acoes: `<button class="btn primario" id="novo-fluxo">${icone('mais')}<span class="so-desktop">Novo fluxo</span></button>` });
+  const [todos, cats] = await Promise.all([api('/fluxos'), api('/fluxos-categorias')]);
+  const nomes = cats.categorias.map((x) => x.nome);
+  if (filtroFluxo && filtroFluxo !== '__sem' && !nomes.some((n) => n.toLowerCase() === filtroFluxo.toLowerCase())) filtroFluxo = '';
+  if (filtroFluxo === '__sem' && !cats.semCategoria) filtroFluxo = '';
+  const padrao = filtroFluxo && filtroFluxo !== '__sem' ? filtroFluxo : '';
+  c.innerHTML = `
+    <p class="small muted" style="margin-top:0">Suas regras, rotinas e passo a passo de trabalho, para consultar sempre que precisar.</p>
+    ${cats.total ? `<div class="subabas" role="tablist" aria-label="Assuntos">
+      <button class="subaba ${!filtroFluxo ? 'ativa' : ''}" data-cat="">Todos <span class="cont">${cats.total}</span></button>
+      ${cats.categorias.map((x) => `<button class="subaba ${filtroFluxo.toLowerCase() === x.nome.toLowerCase() ? 'ativa' : ''}" data-cat="${esc(x.nome)}">${esc(x.nome)} <span class="cont">${x.total}</span></button>`).join('')}
+      ${cats.semCategoria && cats.categorias.length ? `<button class="subaba ${filtroFluxo === '__sem' ? 'ativa' : ''}" data-cat="__sem">Sem assunto <span class="cont">${cats.semCategoria}</span></button>` : ''}
+      ${cats.categorias.length ? '<button class="btn pequeno" id="organizar-assuntos" style="margin-left:auto">Organizar assuntos</button>' : ''}
+    </div>` : ''}
+    <div class="filtros"><input type="search" id="busca-fluxo" placeholder="Buscar no título, passos, regras ou referências…" aria-label="Buscar fluxos"></div>
+    <div id="lista-fluxos" class="grade grade-2"></div>`;
+  const recarregar = () => telaFluxos(c);
+  const novo = () => formFluxo(null, recarregar, nomes, padrao);
+  $('#novo-fluxo').onclick = novo;
+  $$('.subaba', c).forEach((b) =>
+    b.addEventListener('click', () => {
+      filtroFluxo = b.dataset.cat;
+      recarregar();
+    }),
+  );
+  $('#organizar-assuntos')?.addEventListener('click', () => organizarAssuntosFluxos(cats, recarregar));
+
+  const carregar = async () => {
+    const q = $('#busca-fluxo').value.trim();
+    const lista = q || filtroFluxo ? await api(`/fluxos?${new URLSearchParams({ q, categoria: filtroFluxo })}`) : todos;
+    const alvo = $('#lista-fluxos');
+    if (!lista.length) {
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || filtroFluxo ? 'Nenhum fluxo encontrado.' : 'Nenhum fluxo cadastrado ainda.<br><br><button class="btn primario" id="primeiro-fluxo">Cadastrar meu primeiro fluxo</button>'}</div>`;
+      $('#primeiro-fluxo')?.addEventListener('click', novo);
+      return;
+    }
+    const agrupar = !filtroFluxo && !q && cats.categorias.length > 0;
+    const cartao = (f) => {
+      const passos = passosDe(f);
+      const resumo = (f.texto || f.referencias || '').replace(/\*\*/g, '').slice(0, 160);
+      return `
+      <article class="card nota fluxo-card" data-id="${f.id}">
+        <div class="topo-card" style="justify-content:space-between;gap:.5rem">
+          <h3 style="margin:0"><a href="#" class="abrir-fluxo" data-id="${f.id}">${esc(f.titulo)}</a></h3>
+          <button class="btn icone fav-fluxo ${f.favorito ? 'fav-ativo' : ''}" data-id="${f.id}" data-fav="${f.favorito ? 1 : 0}" title="${f.favorito ? 'Tirar dos favoritos' : 'Marcar como favorito'}" aria-label="Favorito">${f.favorito ? '★' : '☆'}</button>
+        </div>
+        ${f.categoria && !filtroFluxo && !agrupar ? `<div class="small" style="margin-top:.35rem"><button class="badge categoria" data-cat="${esc(f.categoria)}">📁 ${esc(f.categoria)}</button></div>` : ''}
+        ${passos.length ? `<ol class="fluxo-passos resumo">${passos.slice(0, 3).map((x) => `<li>${esc(x.replace(/\*\*/g, ''))}</li>`).join('')}</ol>${passos.length > 3 ? `<div class="small muted">+ ${passos.length - 3} passo(s)</div>` : ''}` : ''}
+        ${!passos.length && resumo ? `<p class="small" style="margin:.5rem 0 0">${esc(resumo)}${(f.texto || f.referencias || '').length > 160 ? '…' : ''}</p>` : ''}
+        <div class="small muted" style="margin-top:.5rem">${passos.length ? `${passos.length} passo(s) · ` : ''}Atualizado em ${fmtDataHora(f.atualizado_em)}</div>
+        <div class="acoes" style="margin-top:.5rem">
+          <button class="btn pequeno primario abrir-fluxo" data-id="${f.id}">Abrir</button>
+          <button class="btn pequeno editar-fluxo" data-id="${f.id}">Editar</button>
+        </div>
+      </article>`;
+    };
+    if (agrupar) {
+      alvo.innerHTML = [...nomes, null]
+        .map((g) => {
+          const itens = lista.filter((f) => (f.categoria || null) === g);
+          if (!itens.length) return '';
+          return `<h2 class="grupo-titulo">${g ? esc(g) : 'Sem assunto'} <span class="muted small">(${itens.length})</span></h2>${itens.map(cartao).join('')}`;
+        })
+        .join('');
+    } else {
+      alvo.innerHTML = lista.map(cartao).join('');
+    }
+    const achar = (id) => lista.find((f) => String(f.id) === String(id));
+    const editar = (f) => formFluxo(f, recarregar, nomes);
+    const excluir = async (f) => {
+      if (!(await confirmar(`Excluir o fluxo "${f.titulo}"?`))) return;
+      await api(`/fluxos/${f.id}`, { metodo: 'DELETE' });
+      toast('Fluxo excluído.');
+      recarregar();
+    };
+    $$('.abrir-fluxo', alvo).forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.preventDefault();
+        const f = achar(b.dataset.id);
+        verFluxo(f, { aoEditar: () => editar(f), aoExcluir: () => excluir(f) });
+      }),
+    );
+    $$('.editar-fluxo', alvo).forEach((b) => b.addEventListener('click', () => editar(achar(b.dataset.id))));
+    $$('.categoria', alvo).forEach((b) =>
+      b.addEventListener('click', () => {
+        filtroFluxo = b.dataset.cat;
+        recarregar();
+      }),
+    );
+    $$('.fav-fluxo', alvo).forEach((b) =>
+      b.addEventListener('click', async () => {
+        await api(`/fluxos/${b.dataset.id}`, { metodo: 'PUT', corpo: { favorito: b.dataset.fav !== '1' } });
+        recarregar();
+      }),
+    );
+  };
+  let t;
+  $('#busca-fluxo').oninput = () => {
+    clearTimeout(t);
+    t = setTimeout(carregar, 250);
+  };
+  await carregar();
 }
 
 // ───────────── anotações gerais ─────────────

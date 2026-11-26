@@ -391,7 +391,8 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '11');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '12');
+  assert.equal(await novo.valor('SELECT COUNT(*)::int FROM fluxos'), 0, 'cria a tabela de fluxos');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
 });
@@ -1187,4 +1188,40 @@ test('lista de números SEI reúne processos, anotações e audiências (agrupan
   } finally {
     if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
   }
+});
+
+test('fluxos e orientações: criar, numeração automática, assuntos, busca, favorito e excluir', async () => {
+  const f1 = await req('/api/fluxos', {
+    metodo: 'POST',
+    corpo: { titulo: 'Cumprimento de liminar – medicamentos', categoria: '  liminares ', passos: '1. Abrir processo SEI\n\n2) Enviar à farmácia\n- Acompanhar em 5 dias\n15 dias de prazo é o padrão', texto: 'Regra: **sempre** anexar a decisão.', referencias: 'https://www.tjmg.jus.br' },
+  });
+  assert.equal(f1.status, 201);
+  assert.equal(f1.corpo.categoria, 'Liminares');
+  assert.equal(f1.corpo.passos, 'Abrir processo SEI\nEnviar à farmácia\nAcompanhar em 5 dias\n15 dias de prazo é o padrão', 'tira numeração digitada e linhas vazias');
+  const f2 = await req('/api/fluxos', { metodo: 'POST', corpo: { titulo: 'Atender ofício judicial', texto: 'Responder pelo SEI' } });
+  assert.equal(f2.status, 201);
+  assert.equal((await req('/api/fluxos', { metodo: 'POST', corpo: { titulo: '  ' } })).status, 400);
+
+  const ids = async (qs = '') => (await req(`/api/fluxos?${qs}`)).corpo.map((f) => f.id);
+  assert.deepEqual(await ids('q=farmácia'), [f1.corpo.id], 'busca nos passos');
+  assert.deepEqual(await ids('q=ofício'), [f2.corpo.id]);
+  assert.deepEqual(await ids('categoria=liminares'), [f1.corpo.id]);
+  assert.deepEqual(await ids('categoria=__sem'), [f2.corpo.id]);
+
+  // Favorito sobe para o topo e não muda a data de atualização.
+  const fav = await req(`/api/fluxos/${f2.corpo.id}`, { metodo: 'PUT', corpo: { favorito: true } });
+  assert.equal(fav.corpo.favorito, 1);
+  assert.equal(fav.corpo.atualizado_em, f2.corpo.atualizado_em);
+  assert.equal((await ids())[0], f2.corpo.id);
+
+  const cats = (await req('/api/fluxos-categorias')).corpo;
+  assert.deepEqual(cats.categorias, [{ nome: 'Liminares', total: 1 }]);
+  assert.equal(cats.semCategoria, 1);
+  const ren = await req('/api/fluxos-categorias/renomear', { metodo: 'POST', corpo: { de: 'liminares', para: 'decisões judiciais' } });
+  assert.equal(ren.corpo.alteradas, 1);
+  assert.equal(ren.corpo.para, 'Decisões judiciais');
+
+  assert.equal((await req(`/api/fluxos/${f1.corpo.id}`, { metodo: 'DELETE' })).status, 200);
+  assert.equal((await req(`/api/fluxos/${f1.corpo.id}`, { metodo: 'DELETE' })).status, 404);
+  await req(`/api/fluxos/${f2.corpo.id}`, { metodo: 'DELETE' });
 });

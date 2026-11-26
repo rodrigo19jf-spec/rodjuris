@@ -14,6 +14,10 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
   - cada registro tem data, hora (opcional), tipo (envio a setor, solicitação/ofício, cumprimento de decisão, audiência, reunião, petição, outro) e descrição;
   - há um lembrete opcional na data (ex.: audiências);
   - os registros podem ser editados e excluídos.
+- **Fluxos e orientações** (menu "Fluxos"), para guardar as regras e rotinas de trabalho:
+  - cada fluxo tem título, assunto, passo a passo (um passo por linha, numerado automaticamente), regras e orientações (com **negrito**, listas com "-" e links) e referências;
+  - assuntos funcionam como pastas (abas no topo e "Organizar assuntos"), com busca em todo o conteúdo;
+  - favoritos ⭐ no topo, data de atualização e botão "Copiar texto".
 - **Anotações gerais** (menu "Anotações"), para processos que você não precisa acompanhar:
   - cada anotação tem título, nº do processo e nº SEI (opcionais), etiquetas e texto livre;
   - subdivisão por **tipo de ação / assunto** (como pastas): abas no topo, agrupamento em "Todas" e a janela "Organizar tipos", para renomear, juntar ou remover;

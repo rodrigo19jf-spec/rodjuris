@@ -522,3 +522,22 @@ a.item-clicavel:hover .seta { color: var(--primary); }
 .sei-linha { display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
 .so-celular-inline { display: none; }
 @media (max-width: 760px) { .so-celular-inline { display: inline; } }
+
+/* fluxos e orientações */
+.texto-formatado p { margin: 0 0 .5rem; }
+.texto-formatado ul { margin: 0 0 .5rem; padding-left: 1.2rem; }
+.texto-formatado a { word-break: break-all; }
+.fluxo-detalhe h3 { font-size: .95rem; margin: 1rem 0 .4rem; color: var(--primary); }
+.fluxo-passos { margin: .25rem 0 .5rem; padding-left: 1.6rem; }
+.fluxo-passos li { margin-bottom: .4rem; padding-left: .2rem; }
+.fluxo-passos li::marker { font-weight: 700; color: var(--accent, var(--primary)); }
+.fluxo-passos.resumo { margin-top: .5rem; font-size: .9rem; }
+.fluxo-passos.resumo { list-style-position: inside; padding-left: 0; }
+.fluxo-passos.resumo li { margin-bottom: .15rem; padding-left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fluxo-card h3 a { color: inherit; }
+.fluxo-card .topo-card { display: flex; flex-wrap: nowrap; align-items: flex-start; }
+.fluxo-card .topo-card h3 { flex: 1; min-width: 0; }
+.fluxo-card .fav-fluxo { flex: none; }
+.texto-formatado a { color: var(--primary); text-decoration: underline; }
+.fav-fluxo { font-size: 1.2rem; line-height: 1; color: var(--muted, #888); }
+.fav-fluxo.fav-ativo { color: #c9a24a; }

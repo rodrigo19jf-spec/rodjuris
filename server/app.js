@@ -1204,6 +1204,137 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     }),
   );
 
+  // ───────────── fluxos e orientações de trabalho ─────────────
+  function dadosFluxo(body, atual = {}) {
+    const b = { ...atual, ...body };
+    const titulo = texto(b.titulo, 300);
+    if (!titulo) throw new Error('Informe um título.');
+    const passos = String(b.passos ?? '')
+      .split('\n')
+      .map((l) => l.replace(/^\s*(?:\d{1,3}[.)]\s+|[-*•]\s+)/, '').trim())
+      .filter(Boolean)
+      .slice(0, 200)
+      .join('\n');
+    return {
+      titulo,
+      categoria: normalizarCategoria(b.categoria),
+      passos: texto(passos, 30000),
+      texto: texto(b.texto, 30000),
+      referencias: texto(b.referencias, 10000),
+      favorito: b.favorito === true || b.favorito === 1 || b.favorito === '1' ? 1 : 0,
+    };
+  }
+
+  app.get(
+    '/api/fluxos',
+    a(async (req, res) => {
+      const where = [];
+      const params = [];
+      if (req.query.q) {
+        const q = `%${String(req.query.q).trim()}%`;
+        where.push('(titulo ILIKE ? OR passos ILIKE ? OR texto ILIKE ? OR referencias ILIKE ? OR categoria ILIKE ?)');
+        params.push(q, q, q, q, q);
+      }
+      if (req.query.categoria === '__sem') {
+        where.push('categoria IS NULL');
+      } else if (req.query.categoria) {
+        where.push('LOWER(categoria) = LOWER(?)');
+        params.push(String(req.query.categoria));
+      }
+      res.json(
+        await req.db.all(
+          `SELECT * FROM fluxos ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+           ORDER BY favorito DESC, LOWER(titulo) LIMIT 500`,
+          ...params,
+        ),
+      );
+    }),
+  );
+
+  app.post(
+    '/api/fluxos',
+    a(async (req, res) => {
+      let d;
+      try {
+        d = dadosFluxo(req.body || {});
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      const cols = Object.keys(d);
+      res.status(201).json(
+        await req.db.get(
+          `INSERT INTO fluxos (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING *`,
+          ...cols.map((c) => d[c]),
+        ),
+      );
+    }),
+  );
+
+  app.put(
+    '/api/fluxos/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const atual = id ? await req.db.get('SELECT * FROM fluxos WHERE id = ?', id) : undefined;
+      if (!atual) return erro(res, 404, 'Fluxo não encontrado.');
+      let d;
+      try {
+        d = dadosFluxo(req.body || {}, atual);
+      } catch (e) {
+        return erro(res, 400, e.message);
+      }
+      // Marcar/desmarcar favorito não conta como atualização do conteúdo.
+      const soFavorito = Object.keys(req.body || {}).every((k) => k === 'favorito');
+      const cols = Object.keys(d);
+      res.json(
+        await req.db.get(
+          `UPDATE fluxos SET ${cols.map((c) => `${c} = ?`).join(', ')}, atualizado_em = ? WHERE id = ? RETURNING *`,
+          ...cols.map((c) => d[c]),
+          soFavorito ? atual.atualizado_em : agoraIso(),
+          id,
+        ),
+      );
+    }),
+  );
+
+  app.delete(
+    '/api/fluxos/:id',
+    a(async (req, res) => {
+      const id = idNum(req.params.id);
+      const r = id ? await req.db.run('DELETE FROM fluxos WHERE id = ?', id) : { rowCount: 0 };
+      if (!r.rowCount) return erro(res, 404, 'Fluxo não encontrado.');
+      res.json({ ok: true });
+    }),
+  );
+
+  app.get(
+    '/api/fluxos-categorias',
+    a(async (req, res) => {
+      const linhas = await req.db.all(
+        `SELECT categoria, COUNT(*)::int AS total FROM fluxos GROUP BY categoria ORDER BY categoria NULLS LAST`,
+      );
+      res.json({
+        categorias: linhas.filter((l) => l.categoria).map((l) => ({ nome: l.categoria, total: l.total })),
+        semCategoria: linhas.find((l) => !l.categoria)?.total || 0,
+        total: linhas.reduce((s, l) => s + l.total, 0),
+      });
+    }),
+  );
+
+  app.post(
+    '/api/fluxos-categorias/renomear',
+    a(async (req, res) => {
+      const de = String(req.body?.de || '').trim();
+      if (!de) return erro(res, 400, 'Informe o assunto atual.');
+      const para = normalizarCategoria(req.body?.para);
+      const r = await req.db.run(
+        'UPDATE fluxos SET categoria = ?, atualizado_em = atualizado_em WHERE LOWER(categoria) = LOWER(?)',
+        para,
+        de,
+      );
+      res.json({ alteradas: r.rowCount, para });
+    }),
+  );
+
   // ───────────── avisos (sininho) ─────────────
   app.get(
     '/api/notificacoes',
