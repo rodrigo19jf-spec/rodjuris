@@ -520,6 +520,5 @@ a.item-clicavel:hover .seta { color: var(--primary); }
 
 /* número SEI com botões */
 .sei-linha { display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
-.sei-abrir { color: var(--primary); }
 .so-celular-inline { display: none; }
 @media (max-width: 760px) { .so-celular-inline { display: inline; } }
