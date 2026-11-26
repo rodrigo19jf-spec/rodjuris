@@ -914,6 +914,29 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     }),
   );
 
+  // ───────────── números SEI (todos os cadastrados, em um só lugar) ─────────────
+  app.get(
+    '/api/sei',
+    a(async (req, res) => {
+      const linhas = await req.db.all(
+        `SELECT sei, 'processo' AS origem, id, COALESCE(titulo, cliente, numero) AS nome, numero AS numero_processo, atualizado_em AS data
+           FROM processos WHERE sei IS NOT NULL AND sei <> ''
+         UNION ALL
+         SELECT sei, 'anotacao', id, titulo, numero_processo, atualizado_em FROM anotacoes WHERE sei IS NOT NULL AND sei <> ''
+         UNION ALL
+         SELECT sei, 'audiencia', id, COALESCE(titulo, 'Audiência de ' || data), numero_processo, data FROM audiencias WHERE sei IS NOT NULL AND sei <> ''`,
+      );
+      // Agrupa por número SEI (o mesmo SEI pode estar num processo, numa anotação e numa audiência).
+      const mapa = new Map();
+      for (const l of linhas) {
+        const chave = l.sei.replace(/\D/g, '');
+        if (!mapa.has(chave)) mapa.set(chave, { sei: l.sei, vinculos: [] });
+        mapa.get(chave).vinculos.push({ origem: l.origem, id: l.id, nome: l.nome, numero_processo: l.numero_processo });
+      }
+      res.json([...mapa.values()].sort((x, y) => x.sei.localeCompare(y.sei, 'pt-BR', { numeric: true })));
+    }),
+  );
+
   // ───────────── audiências (menu próprio) ─────────────
   function dadosAudiencia(body, atual = {}) {
     const b = { ...atual, ...body };

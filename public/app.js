@@ -187,6 +187,51 @@ function ligarProvidencias(raiz, processoId, lista, aoMudar) {
   );
 }
 
+const SEI_URL = 'https://www.sei.mg.gov.br/sei/';
+
+/** Número SEI com os botões "Copiar" e "Abrir no SEI". */
+function htmlSei(sei, { rotulo = true } = {}) {
+  if (!sei) return '';
+  return `<span class="sei-linha">${rotulo ? 'SEI: ' : ''}<span class="mono">${esc(sei)}</span>
+    <button type="button" class="btn pequeno sei-copiar" data-sei="${esc(sei)}" title="Copiar o número">Copiar</button>
+    <button type="button" class="btn pequeno sei-abrir" data-sei="${esc(sei)}" title="Copia o número e abre o SEI MG em nova aba">Abrir no SEI ↗</button></span>`;
+}
+
+/** Cópia imediata (sem esperar), para funcionar antes de abrir a nova aba. */
+function copiarAgora(t) {
+  const ta = document.createElement('textarea');
+  ta.value = t;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  if (!ok) navigator.clipboard?.writeText(t).catch(() => {});
+}
+
+document.addEventListener('click', (e) => {
+  const copiar = e.target.closest('.sei-copiar');
+  const abrir = e.target.closest('.sei-abrir');
+  if (!copiar && !abrir) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const sei = (copiar || abrir).dataset.sei;
+  copiarAgora(sei);
+  if (abrir) {
+    window.open(SEI_URL, '_blank', 'noopener');
+    toast(`Número ${sei} copiado. No SEI, cole na pesquisa rápida (Ctrl+V).`);
+  } else {
+    toast('Número SEI copiado.');
+  }
+});
+
 async function copiarTexto(t) {
   try {
     await navigator.clipboard.writeText(t);
@@ -429,7 +474,7 @@ async function rotear() {
   const hash = location.hash.replace(/^#/, '') || '/';
   const partes = hash.split('?')[0].split('/').filter(Boolean);
   const raiz = partes[0] || 'painel';
-  $$('.nav a').forEach((a) => a.classList.toggle('ativo', a.dataset.rota === (raiz === 'painel' ? 'painel' : raiz)));
+  $$('.nav a').forEach((a) => a.classList.toggle('ativo', a.dataset.rota === (raiz === 'painel' ? 'painel' : raiz === 'sei' ? 'processos' : raiz)));
   const c = $('#conteudo');
   c.innerHTML = '<div class="carregando">Carregando…</div>';
   $('#painel-avisos').hidden = true;
@@ -442,6 +487,7 @@ async function rotear() {
     else if (raiz === 'lembretes') await telaLembretes(c);
     else if (raiz === 'anotacoes') await telaAnotacoes(c);
     else if (raiz === 'audiencias') await telaAudiencias(c);
+    else if (raiz === 'sei') await telaSei(c);
     else if (raiz === 'config') await telaConfig(c);
     else c.innerHTML = '<p class="vazio">Página não encontrada.</p>';
   } catch (err) {
@@ -647,7 +693,7 @@ async function verificarAgora(botao, depois) {
 
 // ───────────── processos ─────────────
 async function telaProcessos(c) {
-  definirTopo('Processos', { acoes: `<button class="btn primario" id="novo-processo">${icone('mais')}<span class="so-desktop">Novo processo</span></button>` });
+  definirTopo('Processos', { acoes: `<a class="btn" href="#/sei" title="Todos os números SEI cadastrados"><span class="so-desktop">Processos SEI</span><span class="so-celular-inline">SEI</span></a><button class="btn primario" id="novo-processo">${icone('mais')}<span class="so-desktop">Novo processo</span></button>` });
   $('#novo-processo').onclick = () => formProcesso();
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   c.innerHTML = `
@@ -905,7 +951,7 @@ async function telaProcesso(c, id, abaInicial) {
           const prox = (p.audiencias || []).filter((x) => x.data >= hoje).sort((x, y) => (x.data + (x.hora || '')).localeCompare(y.data + (y.hora || '')))[0];
           return prox ? `<div><dt>Próxima audiência</dt><dd><a href="#/audiencias">${textoDataHora(prox.data, prox.hora)}</a>${prox.descricao ? `<div class="small muted">${esc(prox.descricao)}</div>` : ''}</dd></div>` : '';
         })()}
-        ${p.sei ? `<div><dt>Nº SEI</dt><dd><span class="mono">${esc(p.sei)}</span> <button class="btn pequeno" id="copiar-sei" title="Copiar para colar na pesquisa do SEI">Copiar</button></dd></div>` : ''}
+        ${p.sei ? `<div><dt>Nº SEI</dt><dd>${htmlSei(p.sei, { rotulo: false })}</dd></div>` : ''}
         ${[['Cliente', p.cliente], ['Parte contrária', p.parte_contraria], ['Tribunal', p.tribunal], ['Vara / órgão', p.orgao], ['Classe', p.classe], ['Assunto', p.assunto]]
           .filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}
       </dl>
@@ -1081,6 +1127,35 @@ async function telaPublicacoes(c) {
   await carregar();
 }
 
+// ───────────── números SEI ─────────────
+async function telaSei(c) {
+  definirTopo('Processos SEI', { voltar: true });
+  const lista = await api('/sei');
+  const ROT = { processo: 'Processo', anotacao: 'Anotação', audiencia: 'Audiência' };
+  const LINK = { processo: (v) => `#/processos/${v.id}`, anotacao: () => '#/anotacoes', audiencia: () => '#/audiencias' };
+  c.innerHTML = `
+    <p class="small muted" style="margin-top:0">Todos os números SEI cadastrados em processos, anotações e audiências. <strong>Abrir no SEI</strong> copia o número e abre o SEI MG: depois é só colar (Ctrl+V) na pesquisa rápida.</p>
+    <div class="filtros"><input type="search" id="busca-sei" placeholder="Buscar por número SEI, processo ou nome…" aria-label="Buscar"></div>
+    <div class="card" id="lista-sei"></div>`;
+  const desenhar = () => {
+    const q = $('#busca-sei').value.trim().toLowerCase();
+    const qd = q.replace(/\D/g, '');
+    const itens = lista.filter((x) => {
+      if (!q) return true;
+      if (qd && x.sei.replace(/\D/g, '').includes(qd)) return true;
+      return x.vinculos.some((v) => (v.nome || '').toLowerCase().includes(q) || (qd && (v.numero_processo || '').includes(qd)));
+    });
+    $('#lista-sei').innerHTML = itens.length
+      ? `<ul class="lista">${itens.map((x) => `<li>
+          <div>${htmlSei(x.sei, { rotulo: false })}</div>
+          <div class="acoes small" style="margin-top:.35rem">${x.vinculos.map((v) => `<a class="badge" href="${LINK[v.origem](v)}">${ROT[v.origem]}: ${esc(v.nome || '')}${v.numero_processo ? ` · ${esc(formatarCnj(v.numero_processo))}` : ''}</a>`).join('')}</div>
+        </li>`).join('')}</ul>`
+      : `<p class="vazio">${lista.length ? 'Nenhum número SEI encontrado.' : 'Nenhum número SEI cadastrado ainda. Informe o "Nº SEI" ao cadastrar processos, anotações ou audiências.'}</p>`;
+  };
+  $('#busca-sei').oninput = desenhar;
+  desenhar();
+}
+
 // ───────────── audiências ─────────────
 const nomeAudiencia = (a) => a.titulo || a.processo_titulo || (a.numero_processo ? formatarCnj(a.numero_processo) : a.sei ? `SEI ${a.sei}` : 'Audiência');
 
@@ -1149,7 +1224,7 @@ function htmlAudiencia(a, passada = false) {
       ${a.descricao ? `<div class="small" style="margin-top:.2rem">${esc(a.descricao)}</div>` : ''}
       <div class="small" style="margin-top:.35rem">
         ${a.numero_processo ? `<div>Processo: <span class="mono">${esc(formatarCnj(a.numero_processo))}</span> <button class="btn pequeno copiar" data-texto="${esc(formatarCnj(a.numero_processo))}">Copiar</button>${a.processo_id ? ` <a href="#/processos/${a.processo_id}">ver processo</a>` : ''}</div>` : ''}
-        ${a.sei ? `<div>SEI: <span class="mono">${esc(a.sei)}</span> <button class="btn pequeno copiar" data-texto="${esc(a.sei)}">Copiar</button></div>` : ''}
+        ${a.sei ? `<div>${htmlSei(a.sei)}</div>` : ''}
       </div>
       ${a.observacoes ? `<div class="small muted" style="white-space:pre-line;margin-top:.35rem">${esc(a.observacoes)}</div>` : ''}
       ${passada ? '' : `<div class="small muted" style="margin-top:.35rem">🔔 Aviso ${aviso}${a.aviso_enviado_em ? ' · enviado' : ''}</div>`}
@@ -1331,7 +1406,7 @@ async function telaAnotacoes(c) {
         </div>
         ${n.numero_processo || n.sei ? `<div class="small" style="margin-top:.35rem">
           ${n.numero_processo ? `<span class="mono">${esc(formatarCnj(n.numero_processo))}</span> <button class="btn pequeno copiar" data-texto="${esc(formatarCnj(n.numero_processo))}">Copiar</button>` : ''}
-          ${n.sei ? `<div>SEI: <span class="mono">${esc(n.sei)}</span> <button class="btn pequeno copiar" data-texto="${esc(n.sei)}">Copiar</button></div>` : ''}
+          ${n.sei ? `<div>${htmlSei(n.sei)}</div>` : ''}
         </div>` : ''}
         ${n.categoria && filtroCategoria === '' && !agrupar ? `<div class="small" style="margin-top:.35rem"><button class="badge categoria" data-cat="${esc(n.categoria)}" title="Ver este tipo">📁 ${esc(n.categoria)}</button></div>` : ''}
         ${n.etiquetas ? `<div class="acoes small" style="margin-top:.4rem">${n.etiquetas.split(',').map((e) => e.trim()).filter(Boolean).map((e) => `<button class="badge etiqueta" data-etiqueta="${esc(e)}" title="Filtrar por esta etiqueta">${esc(e)}</button>`).join('')}</div>` : ''}

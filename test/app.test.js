@@ -1168,3 +1168,23 @@ test('push: contato válido para a Apple e motivo da falha no teste', async () =
   assert.equal(await db.valor('SELECT COUNT(*)::int FROM push_subscriptions'), 0, 'cadastro expirado é removido');
   definirEnvioPush(async (sub, payload) => pushes.push(JSON.parse(payload)));
 });
+
+test('lista de números SEI reúne processos, anotações e audiências (agrupando o mesmo número)', async () => {
+  const antigo = process.env.PJE_TJMG;
+  process.env.PJE_TJMG = '0';
+  try {
+    const NUM_S = gerarCnj(9797979, '2026', '8', '13', '0024');
+    const proc = (await req('/api/processos', { metodo: 'POST', corpo: { numero: NUM_S, titulo: 'MS com SEI', sei: '2270.01.0099999/2026-11', monitorar: false } })).corpo;
+    const nota = (await req('/api/anotacoes', { metodo: 'POST', corpo: { titulo: 'Nota com SEI', sei: '1320.01.0000123/2025-40' } })).corpo;
+    const aud = (await req('/api/audiencias', { metodo: 'POST', corpo: { sei: '2270.01.0099999/2026-11', data: '2026-12-15', titulo: 'Audiência MS' } })).corpo;
+    const lista = (await req('/api/sei')).corpo;
+    const ms = lista.find((x) => x.sei === '2270.01.0099999/2026-11');
+    assert.deepEqual(ms.vinculos.map((v) => v.origem).sort(), ['audiencia', 'processo'], 'mesmo SEI agrupado');
+    assert.ok(lista.some((x) => x.sei === '1320.01.0000123/2025-40' && x.vinculos[0].origem === 'anotacao'));
+    await req(`/api/audiencias/${aud.id}`, { metodo: 'DELETE' });
+    await req(`/api/anotacoes/${nota.id}`, { metodo: 'DELETE' });
+    await req(`/api/processos/${proc.id}`, { metodo: 'DELETE' });
+  } finally {
+    if (antigo === undefined) delete process.env.PJE_TJMG; else process.env.PJE_TJMG = antigo;
+  }
+});
