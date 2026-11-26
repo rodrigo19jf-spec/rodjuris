@@ -197,6 +197,27 @@ function htmlSei(sei, { rotulo = true } = {}) {
     <button type="button" class="btn pequeno sei-abrir" data-sei="${esc(sei)}" title="Copia o número e abre o SEI MG em nova aba">Abrir no SEI ↗</button></span>`;
 }
 
+/**
+ * Favorito "Pesquisar no SEI": roda dentro da página do SEI MG (já logado), lê o número copiado
+ * e faz a pesquisa rápida. Não guarda nem envia nada: só preenche o campo da própria página.
+ */
+const SEI_FAVORITO_JS = `(async()=>{
+const achar=(d)=>d&&(d.getElementById('txtPesquisaRapida')||d.querySelector('input[name=txtPesquisaRapida]'));
+if(!/sei/i.test(location.hostname)){alert('Abra o SEI MG (já logado) e clique de novo no favorito Pesquisar no SEI.');return}
+let f=achar(document);
+if(!f){for(const fr of document.querySelectorAll('iframe,frame')){try{f=achar(fr.contentDocument);if(f)break}catch(e){}}}
+if(!f){alert('Não encontrei a pesquisa rápida nesta página do SEI. Cole o número (já copiado) manualmente.');return}
+let n='';try{n=await navigator.clipboard.readText()}catch(e){}
+n=(n||'').trim();
+if(!/^[0-9.\\/-]{5,40}$/.test(n)){n=(prompt('Número SEI para pesquisar:',n.slice(0,40))||'').trim()}
+if(!n)return;
+f.value=n;f.focus();
+const fm=f.form;
+if(fm){fm.requestSubmit?fm.requestSubmit():fm.submit()}
+else{f.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,which:13,bubbles:true}))}
+})()`;
+const SEI_FAVORITO = 'javascript:' + encodeURIComponent(SEI_FAVORITO_JS.replace(/\n/g, ''));
+
 /** Cópia imediata (sem esperar), para funcionar antes de abrir a nova aba. */
 function copiarAgora(t) {
   const ta = document.createElement('textarea');
@@ -226,7 +247,7 @@ document.addEventListener('click', (e) => {
   copiarAgora(sei);
   if (abrir) {
     window.open(SEI_URL, '_blank', 'noopener');
-    toast(`Número ${sei} copiado. No SEI, cole na pesquisa rápida (Ctrl+V).`);
+    toast(`Número ${sei} copiado. No SEI, clique no favorito “Pesquisar no SEI” (ou cole com Ctrl+V na pesquisa rápida).`);
   } else {
     toast('Número SEI copiado.');
   }
@@ -1731,6 +1752,22 @@ async function telaConfig(c) {
       </section>
 
       <section class="card">
+        <h2>SEI MG — pesquisa em 1 clique</h2>
+        <p class="small muted" style="margin-top:0">Um favorito do navegador que, já dentro do SEI MG, pesquisa sozinho o número copiado pelo botão <strong>Abrir no SEI ↗</strong>.</p>
+        <p class="small" style="margin-bottom:.35rem"><strong>No computador:</strong> mostre a barra de favoritos (Ctrl+Shift+B) e <strong>arraste</strong> este botão para ela:</p>
+        <p><a class="btn primario" id="sei-favorito" href="${SEI_FAVORITO}" draggable="true" title="Arraste para a barra de favoritos">🔎 Pesquisar no SEI</a></p>
+        <p class="small" style="margin-bottom:.35rem"><strong>Como usar:</strong> no RodJuris clique em <em>Abrir no SEI ↗</em>; no SEI (logado), clique no favorito <em>Pesquisar no SEI</em>. Na 1ª vez o navegador pergunta se pode ler a área de transferência — clique em “Permitir”.</p>
+        <details class="small"><summary>No iPhone (Safari)</summary>
+          <ol style="padding-left:1.2rem">
+            <li>Toque em <button type="button" class="btn pequeno" id="sei-favorito-copiar">Copiar código do favorito</button></li>
+            <li>No Safari, abra qualquer página e adicione aos Favoritos (ícone de compartilhar → “Adicionar aos Favoritos”), com o nome <em>Pesquisar no SEI</em>.</li>
+            <li>Abra os Favoritos → Editar → toque nesse favorito, apague o endereço e cole o código copiado.</li>
+            <li>Para usar: no SEI, toque na barra de endereço e escolha o favorito <em>Pesquisar no SEI</em> (toque em “Colar” se o Safari pedir).</li>
+          </ol>
+        </details>
+      </section>
+
+      <section class="card">
         <h2>Segurança</h2>
         <form id="form-senha">
           <div class="campo"><label for="s-atual">Senha atual</label><input id="s-atual" type="password" autocomplete="current-password" required></div>
@@ -1746,6 +1783,14 @@ async function telaConfig(c) {
     toast('Configurações salvas.');
   };
   $('#verif-agora').onclick = (e) => verificarAgora(e.currentTarget, () => telaConfig(c));
+  $('#sei-favorito').onclick = (e) => {
+    e.preventDefault();
+    toast('Arraste este botão para a barra de favoritos do navegador. Depois use-o dentro do SEI MG.');
+  };
+  $('#sei-favorito-copiar').onclick = () => {
+    copiarAgora(SEI_FAVORITO);
+    toast('Código do favorito copiado. Cole no endereço do favorito no Safari.');
+  };
   $('#testar-cnj').onclick = async (e) => {
     const b = e.currentTarget;
     b.disabled = true;

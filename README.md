@@ -26,7 +26,7 @@ Aplicativo web pessoal para advogados, inspirado no [Jurify](https://github.com/
   - gera um lembrete automático com a antecedência escolhida (1 h a 1 semana);
   - a lista se divide em "Próximas" e "Realizadas";
   - aparece no Painel ("Próximas audiências") e como etiqueta no processo cadastrado com o mesmo número.
-- **Número do processo SEI** vinculado a cada processo judicial: botões "Copiar" e "Abrir no SEI ↗" (copia o número e abre o SEI MG para colar na pesquisa rápida) e página **Processos SEI** com todos os números cadastrados em processos, anotações e audiências.
+- **Número do processo SEI** vinculado a cada processo judicial: botões "Copiar" e "Abrir no SEI ↗" (copia o número e abre o SEI MG para colar na pesquisa rápida) e página **Processos SEI** com todos os números cadastrados em processos, anotações e audiências. Em Ajustes há o favorito **"Pesquisar no SEI"**: arrastado para a barra de favoritos, ele faz a pesquisa rápida do número copiado dentro do SEI (já logado).
 - **Acompanhar o cumprimento de liminares deferidas:**
   - **situação:** pendente, em andamento, cumprida parcialmente ou cumprida;
   - **dados:** prazo para cumprimento (com calculadora em dias úteis, dias corridos ou horas), setor/responsável a cobrar e multa fixada;
