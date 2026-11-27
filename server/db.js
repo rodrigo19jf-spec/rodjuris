@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS processos (
   status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','suspenso','encerrado')),
   observacoes TEXT,
   sei TEXT,                                -- número do processo no SEI (ex.: SEI MG)
+  acompanhamento_diario INTEGER NOT NULL DEFAULT 0, -- processos que pedem atenção diária (sempre monitorados)
+  proximo_passo TEXT,                      -- o que fazer/observar a seguir
   audiencia_data TEXT,                     -- AAAA-MM-DD (próxima audiência)
   audiencia_hora TEXT,                     -- HH:MM
   audiencia_descricao TEXT,                -- tipo/local/link
@@ -263,6 +265,9 @@ const MIGRACOES = [
   criado_em TEXT NOT NULL DEFAULT ${AGORA_SQL},
   atualizado_em TEXT NOT NULL DEFAULT ${AGORA_SQL}
 );`,
+  // Acompanhamento diário e "próximo passo".
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS acompanhamento_diario INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS proximo_passo TEXT;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

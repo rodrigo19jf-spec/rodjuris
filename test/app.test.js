@@ -6,6 +6,7 @@ import { aliasDataJud, cnjValido, formatarCnj } from '../server/cnj.js';
 import { verificarLembretes, verificarTudo } from '../server/monitor.js';
 import { definirEnvioPush, definirTransporteEmail } from '../server/notificador.js';
 import { definirEsperas } from '../server/fontes.js';
+import { enviarResumoDiario } from '../server/resumo.js';
 
 definirEsperas([0, 0]);
 
@@ -391,7 +392,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '12');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '13');
   assert.equal(await novo.valor('SELECT COUNT(*)::int FROM fluxos'), 0, 'cria a tabela de fluxos');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
@@ -1224,4 +1225,49 @@ test('fluxos e orientações: criar, numeração automática, assuntos, busca, f
   assert.equal((await req(`/api/fluxos/${f1.corpo.id}`, { metodo: 'DELETE' })).status, 200);
   assert.equal((await req(`/api/fluxos/${f1.corpo.id}`, { metodo: 'DELETE' })).status, 404);
   await req(`/api/fluxos/${f2.corpo.id}`, { metodo: 'DELETE' });
+});
+
+test('acompanhamento diário: grupos, próximo passo, painel e resumo das 8h em dia útil', async () => {
+  const mk = async (seq, corpo) => (await req('/api/processos', { metodo: 'POST', corpo: { numero: gerarCnj(seq, '2026', '8', '13', '0024'), ...corpo } })).corpo;
+  const pd = await mk(8181811, { titulo: 'MS Medicamento X', acompanhamento_diario: true, monitorar: false, proximo_passo: 'Cobrar a Farmácia' });
+  assert.equal(pd.acompanhamento_diario, 1);
+  assert.equal(pd.monitorar, 1, 'acompanhamento diário sempre monitora');
+  assert.equal(pd.proximo_passo, 'Cobrar a Farmácia');
+  const pm = await mk(8181812, { titulo: 'Só monitorado' });
+  const pa = await mk(8181813, { titulo: 'Arquivado', monitorar: false });
+  assert.equal(pm.acompanhamento_diario, 0);
+
+  const ids = async (grupo) => (await req(`/api/processos?grupo=${grupo}`)).corpo.map((p) => p.id);
+  assert.ok((await ids('diario')).includes(pd.id));
+  assert.ok(!(await ids('diario')).includes(pm.id));
+  assert.ok((await ids('monitorados')).includes(pm.id) && !(await ids('monitorados')).includes(pd.id));
+  assert.ok((await ids('arquivados')).includes(pa.id) && !(await ids('arquivados')).includes(pm.id));
+  const g = (await req('/api/processos-grupos')).corpo;
+  assert.ok(g.diario >= 1 && g.arquivados >= 1 && g.todos >= g.diario + g.monitorados + g.arquivados - 0);
+  assert.equal(g.todos, g.diario + g.monitorados + g.arquivados);
+
+  // Painel traz os processos em acompanhamento diário.
+  const painel = (await req('/api/painel')).corpo;
+  assert.deepEqual(painel.diario.map((p) => p.id), [pd.id]);
+  assert.equal(painel.diario[0].proximo_passo, 'Cobrar a Farmácia');
+
+  // Resumo: só em dia útil, a partir das 8h (Brasília), uma vez por dia.
+  definirEnvioPush(async () => {});
+  await setConfig(db, 'resumo_diario_ultimo', '');
+  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-04T10:30:00Z' })).enviado, false, '7h30 em Brasília: cedo demais');
+  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-05T12:00:00Z' })).enviado, false, 'sábado');
+  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-25T12:00:00Z' })).enviado, false, 'Natal');
+  const r = await enviarResumoDiario(db, { agora: '2026-12-04T11:05:00Z' }); // sexta, 8h05
+  assert.equal(r.enviado, true);
+  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-04T15:00:00Z' })).motivo, 'já enviado hoje');
+  const n = await db.get("SELECT * FROM notificacoes WHERE tipo = 'resumo' ORDER BY id DESC LIMIT 1");
+  assert.match(n.titulo, /Acompanhamento diário — 1 processo/);
+  assert.match(n.mensagem, /Cobrar a Farmácia/);
+  assert.equal(n.link, '/#/processos?grupo=diario');
+
+  // Deixar de monitorar tira do acompanhamento diário; arquivar mantém o próximo passo.
+  const arq = (await req(`/api/processos/${pd.id}`, { metodo: 'PUT', corpo: { monitorar: false } })).corpo;
+  assert.equal(arq.acompanhamento_diario, 0);
+  assert.equal(arq.monitorar, 0);
+  for (const p of [pd, pm, pa]) await req(`/api/processos/${p.id}`, { metodo: 'DELETE' });
 });

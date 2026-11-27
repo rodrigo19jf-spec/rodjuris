@@ -1,4 +1,5 @@
 import express from 'express';
+import { processosDiarios } from './resumo.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -302,7 +303,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       const db = req.db;
       const agora = agoraIso();
       const em7 = new Date(Date.now() + 7 * 86_400_000).toISOString();
-      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares, audiencias, andamentosNovos] = await Promise.all([
+      const [ativos, monitorados, pubNaoLidas, andNaoLidos, atrasados, proximos, publicacoes, ultima, avisosEproc, liminares, audiencias, andamentosNovos, diario] = await Promise.all([
         db.valor("SELECT COUNT(*)::int FROM processos WHERE status = 'ativo'"),
         db.valor("SELECT COUNT(*)::int FROM processos WHERE monitorar = 1 AND status <> 'encerrado'"),
         db.valor('SELECT COUNT(*)::int FROM publicacoes WHERE lida = 0'),
@@ -352,6 +353,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
              GROUP BY p.id, p.titulo, p.numero
            ) t ORDER BY ultima_data DESC NULLS LAST, processo_id DESC LIMIT 10`,
         ),
+        processosDiarios(db),
       ]);
       res.json({
         processosAtivos: ativos,
@@ -366,6 +368,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         avisosEproc,
         liminares,
         audiencias,
+        diario,
       });
     }),
   );
@@ -386,6 +389,13 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       out.status = STATUS_PROC.includes(body.status) ? body.status : 'ativo';
     }
     if (!parcial || body.monitorar !== undefined) out.monitorar = body.monitorar === false || body.monitorar === 0 ? 0 : 1;
+    // Acompanhamento diário implica monitoramento; deixar de monitorar tira do acompanhamento diário.
+    if (!parcial || body.acompanhamento_diario !== undefined) {
+      out.acompanhamento_diario = body.acompanhamento_diario === true || body.acompanhamento_diario === 1 ? 1 : 0;
+    }
+    if (out.acompanhamento_diario === 1) out.monitorar = 1;
+    else if (out.monitorar === 0) out.acompanhamento_diario = 0;
+    if (!parcial || body.proximo_passo !== undefined) out.proximo_passo = texto(body.proximo_passo, 500);
     if (!parcial || body.sei !== undefined) {
       const sei = texto(body.sei, 60);
       if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
@@ -446,6 +456,9 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
       } else if (req.query.liminar === 'sem_info') {
         where.push('p.liminar IS NULL');
       }
+      if (req.query.grupo === 'diario') where.push('p.acompanhamento_diario = 1');
+      else if (req.query.grupo === 'monitorados') where.push('p.monitorar = 1 AND p.acompanhamento_diario = 0');
+      else if (req.query.grupo === 'arquivados') where.push('p.monitorar = 0 AND p.acompanhamento_diario = 0');
       if (req.query.cumprimento === 'pendente') {
         where.push("p.liminar = 'deferida' AND p.cumprimento_situacao IN ('pendente', 'andamento', 'parcial')");
       } else if (req.query.cumprimento === 'cumprida') {
@@ -473,6 +486,20 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ...params,
       );
       res.json(rows);
+    }),
+  );
+
+  app.get(
+    '/api/processos-grupos',
+    a(async (req, res) => {
+      const r = await req.db.get(
+        `SELECT COUNT(*) FILTER (WHERE acompanhamento_diario = 1)::int AS diario,
+                COUNT(*) FILTER (WHERE monitorar = 1 AND acompanhamento_diario = 0)::int AS monitorados,
+                COUNT(*) FILTER (WHERE monitorar = 0 AND acompanhamento_diario = 0)::int AS arquivados,
+                COUNT(*)::int AS todos
+         FROM processos`,
+      );
+      res.json(r);
     }),
   );
 

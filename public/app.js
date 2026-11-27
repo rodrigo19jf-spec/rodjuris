@@ -252,6 +252,16 @@ function seloAudiencia(p) {
   return `<span class="badge ${urgente ? 'erro' : 'audiencia'}" title="Audiência agendada (veja o menu Audiências)">🗓 Audiência ${textoDataHora(data, hora)}</span>`;
 }
 
+/** Grupo de acompanhamento: diário (atenção diária), monitorado ou arquivado (nenhum dos dois). */
+const grupoProcesso = (p) => (p.acompanhamento_diario ? 'diario' : p.monitorar ? 'monitorados' : 'arquivados');
+const GRUPOS = {
+  diario: { nome: 'Acompanhamento diário', curto: 'Diário', selo: '<span class="badge diario">📅 Acompanhamento diário</span>' },
+  monitorados: { nome: 'Monitorados', curto: 'Monitorados', selo: '<span class="badge ok">Monitorado</span>' },
+  arquivados: { nome: 'Arquivados', curto: 'Arquivados', selo: '<span class="badge">Arquivado</span>' },
+};
+const seloGrupo = (p) => GRUPOS[grupoProcesso(p)].selo;
+const corpoGrupo = (g) => ({ acompanhamento_diario: g === 'diario', monitorar: g !== 'arquivados' });
+
 const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
 function seloCumprimento(p) {
   if (p.liminar !== 'deferida' || !p.cumprimento_situacao) return '';
@@ -593,6 +603,20 @@ async function telaPainel(c) {
       <a class="card stat cor-dourado ${d.publicacoesNaoLidas ? 'alerta' : ''}" href="#/publicacoes"><span class="stat-icone">${icone('publicacoes')}</span><div><div class="valor">${d.publicacoesNaoLidas}</div><div class="rotulo">Publicações novas</div></div></a>
       <a class="card stat cor-vermelho ${d.lembretesAtrasados ? 'alerta' : ''}" href="#/lembretes"><span class="stat-icone">${icone('lembretes')}</span><div><div class="valor">${d.lembretesAtrasados}</div><div class="rotulo">Lembretes atrasados</div></div></a>
     </div>
+    ${d.diario?.length ? `<section class="card painel-diario" style="margin-top:1rem">
+      <div class="secao-titulo" style="margin-top:0"><h2>📅 Acompanhamento diário (${d.diario.length})</h2><a class="small" href="#/processos?grupo=diario">Ver na lista</a></div>
+      <ul class="lista">${d.diario.map((p) => {
+        const novos = p.pub_nao_lidas + p.and_nao_lidos;
+        return `<li class="${novos ? 'nao-lida' : ''}"><a class="item-clicavel" href="#/processos/${p.id}${p.and_nao_lidos && !p.pub_nao_lidas ? '?aba=andamentos' : ''}">
+          <div class="corpo">
+            <div class="acoes"><strong>${esc(p.titulo || p.cliente || formatarCnj(p.numero))}</strong>
+              ${novos ? `<span class="badge novo">${novos} novidade(s)</span>` : '<span class="badge">sem novidades</span>'}
+              ${p.lembretes_atrasados ? `<span class="badge erro">${p.lembretes_atrasados} lembrete(s) atrasado(s)</span>` : ''}</div>
+            ${p.proximo_passo ? `<div class="small proximo-passo" style="margin-top:.2rem">➜ <strong>Próximo passo:</strong> ${esc(p.proximo_passo)}</div>` : ''}
+            <div class="small muted" style="margin-top:.15rem">${p.ultimo_andamento ? `Último andamento: ${esc(p.ultimo_andamento)}${p.ultimo_andamento_data ? ` (${fmtData(p.ultimo_andamento_data)})` : ''}` : esc(formatarCnj(p.numero))}${p.proximo_lembrete ? ` · Lembrete: ${esc(p.proximo_lembrete_titulo)} em ${fmtDataHora(p.proximo_lembrete)}` : ''}</div>
+          </div><span class="seta" aria-hidden="true">›</span></a></li>`;
+      }).join('')}</ul>
+    </section>` : ''}
     <p class="small muted" style="margin-top:.75rem">Última verificação automática: ${d.ultimaVerificacao ? `${fmtDataHora(d.ultimaVerificacao)} (${relativo(d.ultimaVerificacao)})` : 'ainda não realizada'}</p>
     ${d.avisosEproc?.length ? `<section class="card" style="margin-top:1rem;border-color:var(--warn)">
       <div class="secao-titulo" style="margin-top:0"><h2>⚖️ Intimações pendentes no eproc (${d.avisosEproc.length})</h2>
@@ -685,11 +709,22 @@ async function verificarAgora(botao, depois) {
 }
 
 // ───────────── processos ─────────────
+let grupoProcessos = null; // última sub-aba escolhida em Processos
 async function telaProcessos(c) {
   definirTopo('Processos', { acoes: `<a class="btn" href="#/sei" title="Todos os números SEI cadastrados"><span class="so-desktop">Processos SEI</span><span class="so-celular-inline">SEI</span></a><button class="btn primario" id="novo-processo">${icone('mais')}<span class="so-desktop">Novo processo</span></button>` });
   $('#novo-processo').onclick = () => formProcesso();
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const contagem = await api('/processos-grupos');
+  if (['diario', 'monitorados', 'arquivados', 'todos'].includes(params.get('grupo'))) grupoProcessos = params.get('grupo');
+  // Filtros de liminar/cumprimento vindos do Painel mostram todos os processos.
+  if (params.get('cumprimento') || params.get('liminar')) grupoProcessos = 'todos';
+  if (!grupoProcessos) grupoProcessos = contagem.diario ? 'diario' : contagem.monitorados ? 'monitorados' : 'todos';
   c.innerHTML = `
+    <div class="subabas" role="tablist" aria-label="Grupos de processos">
+      ${[['diario', '📅 <span class="so-desktop">Acompanhamento diário</span><span class="so-celular-inline">Diário</span>'], ['monitorados', 'Monitorados'], ['arquivados', 'Arquivados'], ['todos', 'Todos']]
+        .map(([g, nome]) => `<button class="subaba ${grupoProcessos === g ? 'ativa' : ''}" data-grupo="${g}">${nome} <span class="cont">${contagem[g]}</span></button>`).join('')}
+    </div>
+    <p class="small muted" id="ajuda-grupo" style="margin:-.25rem 0 .75rem"></p>
     <div class="filtros">
       <input type="search" id="busca" placeholder="Buscar por número, SEI, cliente, título…" value="${esc(params.get('q') || '')}" aria-label="Buscar">
       <select id="filtro-status" aria-label="Situação" style="width:auto">
@@ -713,10 +748,22 @@ async function telaProcessos(c) {
     const status = $('#filtro-status').value;
     const liminar = $('#filtro-liminar').value;
     const cumprimento = $('#filtro-cumprimento').value;
-    const lista = await api(`/processos?${new URLSearchParams({ q, status, liminar, cumprimento })}`);
+    const grupo = grupoProcessos === 'todos' ? '' : grupoProcessos;
+    $('#ajuda-grupo').textContent = {
+      diario: 'Processos que pedem atenção todo dia: aparecem no topo do Painel e no resumo das 8h (dias úteis). Também são monitorados.',
+      monitorados: 'Publicações e andamentos são consultados automaticamente e você é avisado das novidades.',
+      arquivados: 'Sem monitoramento nem acompanhamento diário. Ficam guardados para consulta.',
+      todos: '',
+    }[grupoProcessos];
+    const lista = await api(`/processos?${new URLSearchParams({ q, status, liminar, cumprimento, grupo })}`);
     const alvo = $('#lista-processos');
     if (!lista.length) {
-      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status || liminar || cumprimento ? 'Nenhum processo encontrado.' : 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>'}</div>`;
+      const vazioGrupo = {
+        diario: 'Nenhum processo em acompanhamento diário. Abra um processo e escolha “Acompanhamento diário”.',
+        monitorados: 'Nenhum processo só monitorado.',
+        arquivados: 'Nenhum processo arquivado.',
+      }[grupoProcessos];
+      alvo.innerHTML = `<div class="card vazio" style="grid-column:1/-1">${q || status || liminar || cumprimento ? 'Nenhum processo encontrado.' : !contagem.todos ? 'Nenhum processo cadastrado ainda.<br><br><button class="btn primario" id="primeiro">Cadastrar meu primeiro processo</button>' : vazioGrupo || 'Nenhum processo encontrado.'}</div>`;
       $('#primeiro')?.addEventListener('click', () => formProcesso());
       return;
     }
@@ -737,7 +784,7 @@ async function telaProcessos(c) {
           ${seloLiminar(p.liminar)}
           ${seloCumprimento(p)}
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
-          ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
+          ${seloGrupo(p)}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
           ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
           ${p.pje_situacao === 'ativo' ? '<span class="badge ok">PJe TJMG</span>' : ''}
@@ -745,6 +792,7 @@ async function telaProcessos(c) {
         </div>
         ${p.cliente && p.titulo ? `<div class="small muted" style="margin-top:.35rem">Cliente: ${esc(p.cliente)}</div>` : ''}
         ${p.sei ? `<div class="small muted">SEI: <span class="mono">${esc(p.sei)}</span></div>` : ''}
+        ${p.proximo_passo ? `<div class="small proximo-passo" style="margin-top:.35rem">➜ <strong>Próximo passo:</strong> ${esc(p.proximo_passo)}</div>` : ''}
         ${p.proximo_lembrete ? `<div class="small" style="margin-top:.25rem">Próximo compromisso: ${fmtDataHora(p.proximo_lembrete)}</div>` : ''}
       </a>`;
     }).join('');
@@ -757,6 +805,13 @@ async function telaProcessos(c) {
   $('#filtro-status').onchange = carregar;
   $('#filtro-liminar').onchange = carregar;
   $('#filtro-cumprimento').onchange = carregar;
+  $$('.subaba[data-grupo]', c).forEach((b) =>
+    b.addEventListener('click', () => {
+      grupoProcessos = b.dataset.grupo;
+      $$('.subaba[data-grupo]', c).forEach((x) => x.classList.toggle('ativa', x === b));
+      carregar();
+    }),
+  );
   await carregar();
 }
 
@@ -821,7 +876,17 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
       </fieldset>
       <div class="campo"><label for="f-assunto">Assunto</label><input id="f-assunto" value="${esc(p.assunto || '')}"></div>
       <div class="campo"><label for="f-obs">Observações</label><textarea id="f-obs">${esc(p.observacoes || '')}</textarea></div>
-      <label class="check"><input type="checkbox" id="f-monitorar" ${p.monitorar === 0 ? '' : 'checked'}> Monitorar publicações e andamentos e me avisar quando houver novidade</label>
+      <fieldset class="grupo-acomp"><legend>Acompanhamento</legend>
+        ${(() => {
+          const atual = p.id || p.monitorar === 0 || p.acompanhamento_diario ? grupoProcesso(p) : 'monitorados';
+          return [
+            ['diario', '📅 Acompanhamento diário', 'monitora e destaca no Painel e no resumo das 8h'],
+            ['monitorados', 'Monitorar', 'avisa sobre novas publicações e andamentos'],
+            ['arquivados', 'Arquivado', 'sem monitoramento; só guardado para consulta'],
+          ].map(([g, nome, ajuda]) => `<label class="check"><input type="radio" name="f-grupo" value="${g}" ${atual === g ? 'checked' : ''}> <span><strong>${nome}</strong> <span class="muted small">— ${ajuda}</span></span></label>`).join('');
+        })()}
+      </fieldset>
+      <div class="campo"><label for="f-passo">Próximo passo <span class="muted small">(opcional)</span></label><input id="f-passo" maxlength="500" placeholder="Ex.: cobrar resposta da Farmácia na sexta" value="${esc(p.proximo_passo || '')}"></div>
       <div id="erro-proc" class="alerta-caixa erro" hidden style="margin-top:.75rem"></div>
       <footer><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn primario">Salvar</button></footer>
     </form>`, {
@@ -895,7 +960,8 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
               }
             : {}),
           observacoes: $('#f-obs', m).value,
-          monitorar: $('#f-monitorar', m).checked,
+          ...corpoGrupo($('input[name="f-grupo"]:checked', m)?.value || 'monitorados'),
+          proximo_passo: $('#f-passo', m).value,
         };
         try {
           const salvo = await api(editando ? `/processos/${p.id}` : '/processos', { metodo: editando ? 'PUT' : 'POST', corpo });
@@ -931,7 +997,7 @@ async function telaProcesso(c, id, abaInicial) {
             ${seloAudiencia(p)}
             ${seloLiminar(p.liminar)}
             ${seloCumprimento(p)}
-            ${p.monitorar && p.status !== 'encerrado' ? '<span class="badge ok">Monitorado</span>' : '<span class="badge">Sem monitoramento</span>'}
+            ${seloGrupo(p)}
             ${p.pje_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos direto da Consulta Pública do PJe do TJMG">Andamentos via PJe TJMG</span>' : ''}
             ${p.pje_situacao === 'migrado' ? '<span class="badge aviso" title="O processo saiu do PJe">Migrado para o eproc</span>' : ''}
             ${p.eproc_situacao === 'ativo' ? '<span class="badge ok" title="Andamentos lidos pelo webservice oficial do eproc (MNI)">Andamentos via eproc</span>' : ''}
@@ -949,7 +1015,16 @@ async function telaProcesso(c, id, abaInicial) {
           .filter(([, v]) => v).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}
       </dl>
       ${p.observacoes ? `<p class="small" style="white-space:pre-wrap;margin-bottom:0">${esc(p.observacoes)}</p>` : ''}
-      <label class="check small" style="margin-top:.75rem"><input type="checkbox" id="monitorar" ${p.monitorar ? 'checked' : ''}> Monitorar e me avisar sobre novas publicações e andamentos</label>
+      <div class="acomp-linha">
+        <span class="small" style="font-weight:600">Acompanhamento:</span>
+        <div class="segmentado" role="radiogroup" aria-label="Acompanhamento">
+          ${Object.entries(GRUPOS).map(([g, x]) => `<button type="button" role="radio" aria-checked="${grupoProcesso(p) === g}" class="${grupoProcesso(p) === g ? 'ativo' : ''}" data-grupo="${g}">${g === 'diario' ? '📅 ' : ''}${x.curto}</button>`).join('')}
+        </div>
+      </div>
+      <div class="campo proximo-passo-campo">
+        <label for="proximo-passo" class="small">➜ Próximo passo</label>
+        <div class="acoes" style="flex-wrap:nowrap"><input id="proximo-passo" maxlength="500" placeholder="O que fazer ou observar a seguir…" value="${esc(p.proximo_passo || '')}"><button type="button" class="btn pequeno" id="salvar-passo">Salvar</button></div>
+      </div>
       <p class="small muted" style="margin:.5rem 0 0">Última verificação: ${p.ultima_verificacao ? fmtDataHora(p.ultima_verificacao) : 'pendente'}</p>
       ${p.erro_verificacao ? `<div class="alerta-caixa erro small" style="margin-top:.5rem">${esc(p.erro_verificacao)}</div>` : ''}
       ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? `<div class="alerta-caixa small" style="margin-top:.5rem">⏳ <strong>Andamentos aguardando o DataJud:</strong> o sistema do CNJ está instável. O app tenta de novo automaticamente a cada 20 minutos e preenche os dados assim que ele responder.${p.datajud_tentativa ? ` Última tentativa: ${fmtDataHora(p.datajud_tentativa)}.` : ''}</div>` : ''}
@@ -1059,9 +1134,24 @@ async function telaProcesso(c, id, abaInicial) {
     toast('Processo excluído.');
     location.hash = '#/processos';
   };
-  $('#monitorar').onchange = async (e) => {
-    await api(`/processos/${id}`, { metodo: 'PUT', corpo: { monitorar: e.target.checked } });
-    toast(e.target.checked ? 'Monitoramento ativado.' : 'Monitoramento desativado.');
+  $$('.segmentado [data-grupo]', c).forEach((b) =>
+    b.addEventListener('click', async () => {
+      const g = b.dataset.grupo;
+      await api(`/processos/${id}`, { metodo: 'PUT', corpo: corpoGrupo(g) });
+      toast({ diario: 'Processo em acompanhamento diário.', monitorados: 'Processo monitorado.', arquivados: 'Processo arquivado (sem monitoramento).' }[g]);
+      telaProcesso(c, id, $('.abas button.ativa', c)?.dataset.aba);
+    }),
+  );
+  const salvarPasso = async () => {
+    await api(`/processos/${id}`, { metodo: 'PUT', corpo: { proximo_passo: $('#proximo-passo').value } });
+    toast('Próximo passo salvo.');
+  };
+  $('#salvar-passo').onclick = salvarPasso;
+  $('#proximo-passo').onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      salvarPasso();
+    }
   };
   $('#verificar').onclick = async (e) => {
     const b = e.currentTarget;

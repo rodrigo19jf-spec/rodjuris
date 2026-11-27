@@ -541,3 +541,19 @@ a.item-clicavel:hover .seta { color: var(--primary); }
 .texto-formatado a { color: var(--primary); text-decoration: underline; }
 .fav-fluxo { font-size: 1.2rem; line-height: 1; color: var(--muted, #888); }
 .fav-fluxo.fav-ativo { color: #c9a24a; }
+
+/* acompanhamento diário */
+.badge.diario { background: #ede4fb; color: #5b3a9c; }
+.proximo-passo { color: var(--text); background: var(--surface-2); border-left: 3px solid var(--accent, #c9a24a); padding: .3rem .5rem; border-radius: 4px; }
+.painel-diario { border-left: 4px solid #7c5cc4; }
+.grupo-acomp { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .75rem; margin: 0 0 .85rem; }
+.grupo-acomp legend { font-weight: 600; font-size: .9rem; padding: 0 .25rem; }
+.grupo-acomp .check { display: flex; gap: .45rem; align-items: flex-start; margin: .35rem 0; font-weight: 400; }
+.acomp-linha { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .9rem; }
+.segmentado { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; background: var(--surface); }
+.segmentado button { border: 0; background: none; font: inherit; font-size: .85rem; padding: .35rem .8rem; cursor: pointer; color: var(--muted, #667); }
+.segmentado button + button { border-left: 1px solid var(--border); }
+.segmentado button.ativo { background: var(--primary); color: #fff; font-weight: 600; }
+.proximo-passo-campo { margin: .6rem 0 0; }
+.proximo-passo-campo input { flex: 1; min-width: 0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge.diario { background: #3b2d5c; color: #d9c8ff; } }
