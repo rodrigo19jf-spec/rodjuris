@@ -5,7 +5,7 @@ import { buscarProcessoPjeTjmg, ehTjmg } from './pje_tjmg.js';
 import { buscarProcessoEproc, eprocDisponivel, listarAvisosPendentesEproc } from './eproc_mni.js';
 import { textoClasse } from './classes_cnj.js';
 import { agendarCobrancas } from './cumprimento.js';
-import { enviarResumoDiario } from './resumo.js';
+import { agendarConsultasPendentes } from './consulta.js';
 import { dataBrasilia, isoBrasilia, lerIntimacaoComPrazo, parteEhCliente, somarDiasCorridos, vencimentoDiasUteis } from './prazos.js';
 import { formatarDataHora, notificar } from './notificador.js';
 
@@ -484,7 +484,7 @@ export async function verificarLembretes(db, agora = new Date()) {
       tipo: 'lembrete',
       titulo: `${rotulo}: ${l.titulo}`,
       mensagem: `${formatarDataHora(l.data_hora)}${l.descricao ? ' — ' + l.descricao : ''}`,
-      link: '/#/lembretes',
+      link: String(l.origem || '').startsWith('consulta|') && l.processo_id ? `/#/processos/${l.processo_id}` : '/#/lembretes',
       emailTexto: `${rotulo}: ${l.titulo}\nQuando: ${formatarDataHora(l.data_hora)}${proc}\n\n${l.descricao || ''}`,
     });
     disparados++;
@@ -564,12 +564,8 @@ export async function verificarAvisosEproc(db, { fetchFn = fetch, forcar = false
 export async function executarCiclo(db, { fetchFn = fetch, prazoMs = Infinity, pausaMs = 1500 } = {}) {
   const inicio = Date.now();
   await agendarCobrancas(db); // próxima cobrança das liminares pendentes de cumprimento
+  await agendarConsultasPendentes(db); // processos em acompanhamento diário ainda sem consulta agendada
   const lembretes = await verificarLembretes(db);
-  try {
-    await enviarResumoDiario(db);
-  } catch (e) {
-    console.warn('[resumo diário]', e.message);
-  }
   const monitor = await verificarTudo(db, { fetchFn, forcar: false, prazoMs, pausaMs });
   let avisosEproc = { novos: 0 };
   try {

@@ -260,6 +260,14 @@ const GRUPOS = {
   arquivados: { nome: 'Arquivados', curto: 'Arquivados', selo: '<span class="badge">Arquivado</span>' },
 };
 const seloGrupo = (p) => GRUPOS[grupoProcesso(p)].selo;
+/** Selo da próxima consulta aos autos (só para quem está em acompanhamento diário). */
+function seloConsulta(p) {
+  if (!p.acompanhamento_diario || !p.proxima_consulta) return '';
+  const hoje = ymdLocal(new Date());
+  if (p.proxima_consulta < hoje) return `<span class="badge erro">Consulta atrasada (${fmtData(p.proxima_consulta)})</span>`;
+  if (p.proxima_consulta === hoje) return '<span class="badge aviso">📆 Consultar hoje</span>';
+  return `<span class="badge">📆 Consulta em ${fmtData(p.proxima_consulta)}</span>`;
+}
 const corpoGrupo = (g) => ({ acompanhamento_diario: g === 'diario', monitorar: g !== 'arquivados' });
 
 const cumprimentoAberto = (p) => p.liminar === 'deferida' && ['pendente', 'andamento', 'parcial'].includes(p.cumprimento_situacao);
@@ -610,6 +618,7 @@ async function telaPainel(c) {
         return `<li class="${novos ? 'nao-lida' : ''}"><a class="item-clicavel" href="#/processos/${p.id}${p.and_nao_lidos && !p.pub_nao_lidas ? '?aba=andamentos' : ''}">
           <div class="corpo">
             <div class="acoes"><strong>${esc(p.titulo || p.cliente || formatarCnj(p.numero))}</strong>
+              ${seloConsulta({ ...p, acompanhamento_diario: 1 })}
               ${novos ? `<span class="badge novo">${novos} novidade(s)</span>` : '<span class="badge">sem novidades</span>'}
               ${p.lembretes_atrasados ? `<span class="badge erro">${p.lembretes_atrasados} lembrete(s) atrasado(s)</span>` : ''}</div>
             ${p.proximo_passo ? `<div class="small proximo-passo" style="margin-top:.2rem">➜ <strong>Próximo passo:</strong> ${esc(p.proximo_passo)}</div>` : ''}
@@ -750,7 +759,7 @@ async function telaProcessos(c) {
     const cumprimento = $('#filtro-cumprimento').value;
     const grupo = grupoProcessos === 'todos' ? '' : grupoProcessos;
     $('#ajuda-grupo').textContent = {
-      diario: 'Processos que pedem atenção todo dia: aparecem no topo do Painel e no resumo das 8h (dias úteis). Também são monitorados.',
+      diario: 'Processos que pedem atenção especial: aparecem no topo do Painel e você recebe um aviso às 8h no dia marcado para consultar os autos. Também são monitorados.',
       monitorados: 'Publicações e andamentos são consultados automaticamente e você é avisado das novidades.',
       arquivados: 'Sem monitoramento nem acompanhamento diário. Ficam guardados para consulta.',
       todos: '',
@@ -785,6 +794,7 @@ async function telaProcessos(c) {
           ${seloCumprimento(p)}
           ${p.tribunal ? `<span class="badge">${esc(p.tribunal)}</span>` : ''}
           ${seloGrupo(p)}
+          ${seloConsulta(p)}
           ${p.erro_verificacao ? '<span class="badge erro">Erro na verificação</span>' : ''}
           ${p.monitorar && p.datajud_pendente && p.pje_situacao !== 'ativo' && p.eproc_situacao !== 'ativo' ? '<span class="badge aviso">Aguardando DataJud</span>' : ''}
           ${p.pje_situacao === 'ativo' ? '<span class="badge ok">PJe TJMG</span>' : ''}
@@ -880,7 +890,7 @@ function formProcesso(proc = null, aoSalvar, { focoCumprimento = false } = {}) {
         ${(() => {
           const atual = p.id || p.monitorar === 0 || p.acompanhamento_diario ? grupoProcesso(p) : 'monitorados';
           return [
-            ['diario', '📅 Acompanhamento diário', 'monitora e destaca no Painel e no resumo das 8h'],
+            ['diario', '📅 Acompanhamento diário', 'monitora, destaca no Painel e avisa no dia de consultar os autos'],
             ['monitorados', 'Monitorar', 'avisa sobre novas publicações e andamentos'],
             ['arquivados', 'Arquivado', 'sem monitoramento; só guardado para consulta'],
           ].map(([g, nome, ajuda]) => `<label class="check"><input type="radio" name="f-grupo" value="${g}" ${atual === g ? 'checked' : ''}> <span><strong>${nome}</strong> <span class="muted small">— ${ajuda}</span></span></label>`).join('');
@@ -1021,6 +1031,15 @@ async function telaProcesso(c, id, abaInicial) {
           ${Object.entries(GRUPOS).map(([g, x]) => `<button type="button" role="radio" aria-checked="${grupoProcesso(p) === g}" class="${grupoProcesso(p) === g ? 'ativo' : ''}" data-grupo="${g}">${g === 'diario' ? '📅 ' : ''}${x.curto}</button>`).join('')}
         </div>
       </div>
+      ${p.acompanhamento_diario ? `<div class="consulta-caixa">
+        <div class="consulta-linha">
+          <label for="proxima-consulta" class="small" style="margin:0">📆 Próxima consulta aos autos</label>
+          <input type="date" id="proxima-consulta" value="${esc(p.proxima_consulta || '')}">
+          <span class="small">a cada <input type="number" id="consulta-intervalo" min="1" max="90" value="${p.consulta_intervalo || 7}" aria-label="Intervalo em dias"> dias</span>
+          <button type="button" class="btn pequeno primario" id="consultei">✔ Consultei hoje</button>
+        </div>
+        <div class="small muted" style="margin-top:.35rem">Aviso no celular e por e-mail às 8h do dia marcado. Ao clicar em “Consultei hoje”, a próxima data é agendada sozinha (pula fim de semana e feriado).${p.ultima_consulta ? ` Última consulta: ${fmtData(p.ultima_consulta)}.` : ''}</div>
+      </div>` : ''}
       <div class="campo proximo-passo-campo">
         <label for="proximo-passo" class="small">➜ Próximo passo</label>
         <div class="acoes" style="flex-wrap:nowrap"><input id="proximo-passo" maxlength="500" placeholder="O que fazer ou observar a seguir…" value="${esc(p.proximo_passo || '')}"><button type="button" class="btn pequeno" id="salvar-passo">Salvar</button></div>
@@ -1147,6 +1166,21 @@ async function telaProcesso(c, id, abaInicial) {
     toast('Próximo passo salvo.');
   };
   $('#salvar-passo').onclick = salvarPasso;
+  $('#proxima-consulta')?.addEventListener('change', async (e) => {
+    if (!e.target.value) return;
+    await api(`/processos/${id}`, { metodo: 'PUT', corpo: { proxima_consulta: e.target.value } });
+    toast(`Aviso agendado para ${fmtData(e.target.value)} às 8h.`);
+  });
+  $('#consulta-intervalo')?.addEventListener('change', async (e) => {
+    const r = await api(`/processos/${id}`, { metodo: 'PUT', corpo: { consulta_intervalo: e.target.value } });
+    e.target.value = r.consulta_intervalo;
+    toast(`Intervalo: a cada ${r.consulta_intervalo} dia(s).`);
+  });
+  $('#consultei')?.addEventListener('click', async () => {
+    const r = await api(`/processos/${id}/consultei`, { metodo: 'POST' });
+    toast(`Consulta registrada. Próximo aviso: ${fmtData(r.proxima_consulta)} às 8h.`);
+    telaProcesso(c, id, $('.abas button.ativa', c)?.dataset.aba);
+  });
   $('#proximo-passo').onkeydown = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();

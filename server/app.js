@@ -1,5 +1,6 @@
 import express from 'express';
 import { processosDiarios } from './resumo.js';
+import { calcularProximaConsulta, ehLembreteDeConsulta, processoDoLembrete, registrarConsulta, sincronizarConsulta } from './consulta.js';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -396,6 +397,14 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     if (out.acompanhamento_diario === 1) out.monitorar = 1;
     else if (out.monitorar === 0) out.acompanhamento_diario = 0;
     if (!parcial || body.proximo_passo !== undefined) out.proximo_passo = texto(body.proximo_passo, 500);
+    if (!parcial || body.proxima_consulta !== undefined) {
+      const v = body.proxima_consulta ? String(body.proxima_consulta).slice(0, 10) : null;
+      if (v && !dataValida(v)) throw new Error('Data da próxima consulta inválida.');
+      out.proxima_consulta = v;
+    }
+    if (body.consulta_intervalo !== undefined && body.consulta_intervalo !== null && body.consulta_intervalo !== '') {
+      out.consulta_intervalo = Math.max(1, Math.min(Math.round(Number(body.consulta_intervalo)) || 7, 90));
+    }
     if (!parcial || body.sei !== undefined) {
       const sei = texto(body.sei, 60);
       if (sei && !/^[0-9][0-9.\-\/ ]*[0-9]$/.test(sei)) throw new Error('Número SEI inválido (use só números, pontos, barra e hífen).');
@@ -435,6 +444,24 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
     if (final.cumprimento_situacao === 'cumprida' && !final.cumprimento_data) d.cumprimento_data = dataBrasilia(agoraIso());
     return d;
   }
+
+  /** Em acompanhamento diário sem data marcada → agenda a 1ª consulta pelo intervalo; depois sincroniza o lembrete. */
+  async function prepararConsulta(db, id) {
+    const p = await db.get('SELECT id, acompanhamento_diario, proxima_consulta, consulta_intervalo FROM processos WHERE id = ?', id);
+    if (p?.acompanhamento_diario && !p.proxima_consulta) {
+      await db.run('UPDATE processos SET proxima_consulta = ? WHERE id = ?', calcularProximaConsulta(dataBrasilia(agoraIso()), p.consulta_intervalo), id);
+    }
+    await sincronizarConsulta(db, id);
+  }
+
+  app.post(
+    '/api/processos/:id/consultei',
+    a(async (req, res) => {
+      const atual = await processoPorId(req.db, req.params.id);
+      if (!atual) return erro(res, 404, 'Processo não encontrado.');
+      res.json(await registrarConsulta(req.db, atual.id));
+    }),
+  );
 
   async function processoPorId(db, id) {
     const n = idNum(id);
@@ -583,7 +610,8 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ...cols.map((c) => d[c]),
       );
       await sincronizarCumprimento(req.db, novo.id);
-      res.status(201).json(novo);
+      await prepararConsulta(req.db, novo.id);
+      res.status(201).json(await req.db.get('SELECT * FROM processos WHERE id = ?', novo.id));
       // Primeira verificação em segundo plano (cria a linha de base, sem avisos).
       if (novo.monitorar) emSegundoPlano(verificarProcesso(req.db, novo, { fetchFn }));
     }),
@@ -616,6 +644,7 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         );
       }
       await sincronizarCumprimento(req.db, atual.id);
+      await prepararConsulta(req.db, atual.id);
       res.json(await req.db.get('SELECT * FROM processos WHERE id = ?', atual.id));
     }),
   );
@@ -927,6 +956,8 @@ export function criarApp(banco, { fetchFn = fetch } = {}) {
         ...cols.map((c) => d[c]),
         atual.id,
       );
+      // Concluir o lembrete de consulta aos autos = "consultei": agenda a próxima.
+      if (ehLembreteDeConsulta(atual) && d.concluido && !atual.concluido) await registrarConsulta(req.db, processoDoLembrete(atual));
       res.json(await req.db.get('SELECT * FROM lembretes WHERE id = ?', atual.id));
     }),
   );

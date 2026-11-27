@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS processos (
   sei TEXT,                                -- número do processo no SEI (ex.: SEI MG)
   acompanhamento_diario INTEGER NOT NULL DEFAULT 0, -- processos que pedem atenção diária (sempre monitorados)
   proximo_passo TEXT,                      -- o que fazer/observar a seguir
+  proxima_consulta TEXT,                   -- AAAA-MM-DD: dia de consultar os autos (aviso às 8h)
+  consulta_intervalo INTEGER NOT NULL DEFAULT 7, -- dias entre uma consulta e outra
+  ultima_consulta TEXT,
   audiencia_data TEXT,                     -- AAAA-MM-DD (próxima audiência)
   audiencia_hora TEXT,                     -- HH:MM
   audiencia_descricao TEXT,                -- tipo/local/link
@@ -268,6 +271,10 @@ const MIGRACOES = [
   // Acompanhamento diário e "próximo passo".
   `ALTER TABLE processos ADD COLUMN IF NOT EXISTS acompanhamento_diario INTEGER NOT NULL DEFAULT 0;
    ALTER TABLE processos ADD COLUMN IF NOT EXISTS proximo_passo TEXT;`,
+  // Consulta periódica aos autos (substitui o resumo diário).
+  `ALTER TABLE processos ADD COLUMN IF NOT EXISTS proxima_consulta TEXT;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS consulta_intervalo INTEGER NOT NULL DEFAULT 7;
+   ALTER TABLE processos ADD COLUMN IF NOT EXISTS ultima_consulta TEXT;`,
 ];
 
 /** Cria as tabelas (se preciso) e aplica as migrações pendentes. `exec` roda SQL sem parâmetros. */

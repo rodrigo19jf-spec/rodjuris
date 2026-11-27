@@ -6,7 +6,7 @@ import { aliasDataJud, cnjValido, formatarCnj } from '../server/cnj.js';
 import { verificarLembretes, verificarTudo } from '../server/monitor.js';
 import { definirEnvioPush, definirTransporteEmail } from '../server/notificador.js';
 import { definirEsperas } from '../server/fontes.js';
-import { enviarResumoDiario } from '../server/resumo.js';
+import { agendarConsultasPendentes, calcularProximaConsulta } from '../server/consulta.js';
 
 definirEsperas([0, 0]);
 
@@ -392,7 +392,7 @@ test('atualiza banco criado pela versão anterior (migração)', async () => {
   assert.equal(linhas[0].datajud_em, '2026-11-01T00:00:00.000Z', 'processo que já tinha andamentos não refaz a linha de base');
   assert.equal(linhas[1].datajud_em, null);
   assert.equal(linhas[1].datajud_pendente, 0);
-  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '13');
+  assert.equal(await novo.valor("SELECT valor FROM config WHERE chave = 'schema_versao'"), '14');
   assert.equal(await novo.valor('SELECT COUNT(*)::int FROM fluxos'), 0, 'cria a tabela de fluxos');
   await novo.close();
   fs.rmSync(pasta, { recursive: true, force: true });
@@ -1227,7 +1227,7 @@ test('fluxos e orientações: criar, numeração automática, assuntos, busca, f
   await req(`/api/fluxos/${f2.corpo.id}`, { metodo: 'DELETE' });
 });
 
-test('acompanhamento diário: grupos, próximo passo, painel e resumo das 8h em dia útil', async () => {
+test('acompanhamento diário: grupos, próximo passo, painel e consulta agendada aos autos', async () => {
   const mk = async (seq, corpo) => (await req('/api/processos', { metodo: 'POST', corpo: { numero: gerarCnj(seq, '2026', '8', '13', '0024'), ...corpo } })).corpo;
   const pd = await mk(8181811, { titulo: 'MS Medicamento X', acompanhamento_diario: true, monitorar: false, proximo_passo: 'Cobrar a Farmácia' });
   assert.equal(pd.acompanhamento_diario, 1);
@@ -1251,23 +1251,52 @@ test('acompanhamento diário: grupos, próximo passo, painel e resumo das 8h em 
   assert.deepEqual(painel.diario.map((p) => p.id), [pd.id]);
   assert.equal(painel.diario[0].proximo_passo, 'Cobrar a Farmácia');
 
-  // Resumo: só em dia útil, a partir das 8h (Brasília), uma vez por dia.
-  definirEnvioPush(async () => {});
-  await setConfig(db, 'resumo_diario_ultimo', '');
-  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-04T10:30:00Z' })).enviado, false, '7h30 em Brasília: cedo demais');
-  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-05T12:00:00Z' })).enviado, false, 'sábado');
-  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-25T12:00:00Z' })).enviado, false, 'Natal');
-  const r = await enviarResumoDiario(db, { agora: '2026-12-04T11:05:00Z' }); // sexta, 8h05
-  assert.equal(r.enviado, true);
-  assert.equal((await enviarResumoDiario(db, { agora: '2026-12-04T15:00:00Z' })).motivo, 'já enviado hoje');
-  const n = await db.get("SELECT * FROM notificacoes WHERE tipo = 'resumo' ORDER BY id DESC LIMIT 1");
-  assert.match(n.titulo, /Acompanhamento diário — 1 processo/);
-  assert.match(n.mensagem, /Cobrar a Farmácia/);
-  assert.equal(n.link, '/#/processos?grupo=diario');
+  // Ao entrar no acompanhamento diário, a 1ª consulta é agendada pelo intervalo (7 dias) com lembrete às 8h.
+  assert.ok(pd.proxima_consulta, 'agenda a primeira consulta');
+  let lem = await db.get('SELECT * FROM lembretes WHERE origem = ?', `consulta|${pd.id}`);
+  assert.ok(lem, 'cria o lembrete da consulta');
+  assert.match(lem.titulo, /Consultar os autos — MS Medicamento X/);
+  assert.match(lem.descricao, /Próximo passo: Cobrar a Farmácia/);
+  assert.equal(lem.antecedencia_min, 0);
+  assert.equal(new Date(lem.data_hora).toISOString(), new Date(`${pd.proxima_consulta}T08:00:00-03:00`).toISOString());
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM lembretes WHERE origem = ?', `consulta|${pm.id}`), 0, 'só monitorado não tem consulta');
+
+  // Escolher a data manualmente reagenda o aviso.
+  const marcado = (await req(`/api/processos/${pd.id}`, { metodo: 'PUT', corpo: { proxima_consulta: '2027-02-10', consulta_intervalo: 10 } })).corpo;
+  assert.equal(marcado.consulta_intervalo, 10);
+  lem = await db.get('SELECT * FROM lembretes WHERE origem = ?', `consulta|${pd.id}`);
+  assert.equal(lem.data_hora, new Date('2027-02-10T08:00:00-03:00').toISOString());
+  assert.equal((await req(`/api/processos/${pd.id}`, { metodo: 'PUT', corpo: { proxima_consulta: '2027-02-30' } })).status, 400);
+
+  // "Consultei hoje" agenda a próxima pelo intervalo.
+  const cons = (await req(`/api/processos/${pd.id}/consultei`, { metodo: 'POST' })).corpo;
+  assert.ok(cons.ultima_consulta);
+  assert.equal(cons.proxima_consulta, calcularProximaConsulta(cons.ultima_consulta, 10));
+  // Concluir o lembrete em "Lembretes" também conta como consulta.
+  await db.run('UPDATE processos SET proxima_consulta = ? WHERE id = ?', '2026-01-05', pd.id);
+  lem = await db.get('SELECT * FROM lembretes WHERE origem = ?', `consulta|${pd.id}`);
+  await req(`/api/lembretes/${lem.id}`, { metodo: 'PUT', corpo: { concluido: true } });
+  assert.equal((await db.get('SELECT proxima_consulta FROM processos WHERE id = ?', pd.id)).proxima_consulta, cons.proxima_consulta);
+  lem = await db.get('SELECT * FROM lembretes WHERE origem = ?', `consulta|${pd.id}`);
+  assert.equal(lem.concluido, 0, 'o lembrete passa para a próxima data');
+
+  // Diário sem data (ex.: marcado antes desta versão) → o ciclo agenda sozinho.
+  await db.run('UPDATE processos SET proxima_consulta = NULL WHERE id = ?', pd.id);
+  await db.run('DELETE FROM lembretes WHERE origem = ?', `consulta|${pd.id}`);
+  assert.equal(await agendarConsultasPendentes(db), 1);
+  assert.ok((await db.get('SELECT proxima_consulta FROM processos WHERE id = ?', pd.id)).proxima_consulta);
+  assert.ok(await db.get('SELECT 1 FROM lembretes WHERE origem = ?', `consulta|${pd.id}`));
+  assert.equal(await agendarConsultasPendentes(db), 0);
+
+  // Datas calculadas pulam fim de semana e feriado.
+  assert.equal(calcularProximaConsulta('2026-11-27', 7), '2026-12-04'); // sexta → sexta
+  assert.equal(calcularProximaConsulta('2026-11-26', 2), '2026-11-30'); // cai no sábado → segunda
+  assert.equal(calcularProximaConsulta('2026-12-18', 7), '2026-12-28'); // Natal (sexta) → segunda
 
   // Deixar de monitorar tira do acompanhamento diário; arquivar mantém o próximo passo.
   const arq = (await req(`/api/processos/${pd.id}`, { metodo: 'PUT', corpo: { monitorar: false } })).corpo;
   assert.equal(arq.acompanhamento_diario, 0);
   assert.equal(arq.monitorar, 0);
+  assert.equal(await db.valor('SELECT COUNT(*)::int FROM lembretes WHERE origem = ?', `consulta|${pd.id}`), 0, 'sai do diário → remove o aviso');
   for (const p of [pd, pm, pa]) await req(`/api/processos/${p.id}`, { metodo: 'DELETE' });
 });
